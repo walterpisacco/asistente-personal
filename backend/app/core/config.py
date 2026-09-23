@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     bot_sample_rate: int = 16000
     bot_default_character_id: str = "char_tori"
     bot_guest_user_id: str = "user_guest"
+    # Tras TTS: pausa antes de reabrir mic + settle para descartar eco (etiquetas-ia).
+    bot_post_tts_delay_ms: int = 500
+    bot_mic_settle_ms: int = 450
 
     voice_id_threshold: float = 0.75
 

@@ -1,4 +1,11 @@
-"""Loop principal del bot TORI: idle → wake → identify → conversación → idle."""
+"""Loop principal del bot TORI: conversación por turnos (mic ↔ TTS exclusivos).
+
+Patrón como etiquetas-ia mobile:
+  listening → (mic ON) captura
+  thinking  → (mic OFF) STT/LLM/TTS
+  talking   → (mic OFF) reproduce
+  listening → reopen mic + settle
+"""
 
 from __future__ import annotations
 
@@ -7,12 +14,11 @@ import logging
 import sys
 from pathlib import Path
 
-# Permitir `python -m app.bot` desde backend/
 _BACKEND = Path(__file__).resolve().parents[2]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from app.bot.playback import MicStream, play_audio_bytes
+from app.bot.playback import MicStream, begin_listening, speak
 from app.bot.vad import UtteranceCapture
 from app.bot.wake import contains_wake_word
 from app.core.config import get_settings
@@ -25,6 +31,23 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger("tori.bot")
+
+
+def _tts_ext(settings) -> str:
+    return "wav" if settings.tts_provider == "mock" else "mp3"
+
+
+def _speak(settings, mic: MicStream, audio: bytes) -> None:
+    speak(
+        audio,
+        mic=mic,
+        extension=_tts_ext(settings),
+        post_tts_delay_ms=settings.bot_post_tts_delay_ms,
+    )
+
+
+def _listen(settings, mic: MicStream) -> None:
+    begin_listening(mic, settle_ms=settings.bot_mic_settle_ms)
 
 
 async def run_bot() -> None:
@@ -44,13 +67,12 @@ async def run_bot() -> None:
     )
 
     logger.info(
-        "TORI listo. Wake word=%r silence=%sms end_call=%sms stt=%s tts=%s llm=%s",
+        "TORI listo. Wake=%r silence=%sms end_call=%sms post_tts=%sms settle=%sms",
         settings.bot_wake_word,
         settings.bot_silence_ms,
         settings.bot_end_call_ms,
-        settings.stt_provider,
-        settings.tts_provider,
-        settings.llm_provider,
+        settings.bot_post_tts_delay_ms,
+        settings.bot_mic_settle_ms,
     )
 
     with MicStream(sample_rate=settings.bot_sample_rate) as mic:
@@ -58,10 +80,13 @@ async def run_bot() -> None:
             await _idle_and_session(mic, capture, settings)
 
 
-async def _idle_and_session(mic, capture: UtteranceCapture, settings) -> None:
-    logger.info("Escuchando wake word…")
+async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings) -> None:
+    logger.info("Estado=listening (wake word)…")
+    _listen(settings, mic)
+    wav = None
     while True:
         wav = capture.capture_wake_window(mic, window_ms=2500)
+        mic.stop()
         db = SessionLocal()
         try:
             service = ConversationService(db, settings)
@@ -69,43 +94,50 @@ async def _idle_and_session(mic, capture: UtteranceCapture, settings) -> None:
         finally:
             db.close()
         if not text:
+            _listen(settings, mic)
             continue
         logger.info("Idle STT: %s", text)
         if contains_wake_word(text, settings.bot_wake_word):
             logger.info("Wake word detectada")
             break
+        _listen(settings, mic)
 
-    # Identificación: solo busca usuarios existentes (no crea).
+    assert wav is not None
+
     db = SessionLocal()
     try:
         voice_id = VoiceIdService(db, settings)
         user, score = voice_id.identify(wav)
         if user is None:
-            logger.warning("Usuario no reconocido (score=%.3f). Volviendo a idle.", score)
+            logger.warning("Usuario no reconocido (score=%.3f).", score)
             service = ConversationService(db, settings)
             character = service.characters.get_by_id(settings.bot_default_character_id)
             if character:
                 msg = "No te reconocí. Decí TORI de nuevo cuando quieras."
                 audio = await service.tts.synthesize(msg, character.voice_id)
-                play_audio_bytes(
-                    audio,
-                    extension="wav" if settings.tts_provider == "mock" else "mp3",
-                )
+                logger.info("Estado=talking")
+                _speak(settings, mic, audio)
             return
 
         logger.info("Usuario=%s (%s) score=%.3f", user.id, user.full_name, score)
-
         service = ConversationService(db, settings)
+
+        logger.info("Estado=thinking (intro)")
         conversation, intro_audio, intro_text = await service.start_conversation(user)
         logger.info("Intro: %s", intro_text)
-        play_audio_bytes(intro_audio, extension="wav" if settings.tts_provider == "mock" else "mp3")
+        logger.info("Estado=talking")
+        _speak(settings, mic, intro_audio)
 
         while True:
+            logger.info("Estado=listening")
+            _listen(settings, mic)
             utterance, reason = capture.capture_utterance(
                 mic,
                 wait_for_speech=True,
                 idle_timeout_ms=settings.bot_end_call_ms,
             )
+            mic.stop()
+
             if reason == "idle_end_call" or utterance is None:
                 logger.info("Fin de conversación por silencio prolongado")
                 service.end_conversation(conversation.id)
@@ -113,27 +145,27 @@ async def _idle_and_session(mic, capture: UtteranceCapture, settings) -> None:
                 character = service.characters.get_by_id(conversation.character_id)
                 if character:
                     bye_audio = await service.tts.synthesize(bye, character.voice_id)
-                    play_audio_bytes(
-                        bye_audio,
-                        extension="wav" if settings.tts_provider == "mock" else "mp3",
-                    )
+                    logger.info("Estado=talking (bye)")
+                    _speak(settings, mic, bye_audio)
                 break
 
+            logger.info("Estado=thinking")
             result = await service.process_audio(conversation.id, utterance)
             user_text = result.get("user_text") or ""
             assistant_text = result.get("assistant_text") or ""
             logger.info("User: %s", user_text)
             logger.info("TORI: %s", assistant_text)
+
             audio_bytes = result.get("audio_bytes") or b""
             if audio_bytes:
-                play_audio_bytes(
-                    audio_bytes,
-                    extension="wav" if settings.tts_provider == "mock" else "mp3",
-                )
+                logger.info("Estado=talking")
+                _speak(settings, mic, audio_bytes)
+
             action = result.get("action")
             if action:
                 logger.info("Action: %s", action)
     finally:
+        mic.stop()
         db.close()
 
 
