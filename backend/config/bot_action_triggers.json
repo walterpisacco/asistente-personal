@@ -1,0 +1,17 @@
+[
+  {
+    "phrase": "reproduzco música",
+    "action": "youtube_play",
+    "target": "random"
+  },
+  {
+    "phrase": "pongo una canción",
+    "action": "youtube_play",
+    "target": "random"
+  },
+  {
+    "phrase": "te pongo música",
+    "action": "youtube_play",
+    "target": "random"
+  }
+]
