@@ -164,6 +164,10 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings)
             action = result.get("action")
             if action:
                 logger.info("Action: %s", action)
+                if action.get("end_session"):
+                    logger.info("Acción finalizar → cerrando conversación")
+                    service.end_conversation(conversation.id)
+                    break
     finally:
         mic.stop()
         db.close()

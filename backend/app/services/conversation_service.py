@@ -17,7 +17,7 @@ from app.providers.tts.factory import create_tts_provider
 from app.repositories.character_repository import CharacterRepository
 from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.user_repository import UserRepository
-from app.services.actions import match_and_run_actions
+from app.services.actions import run_llm_action
 from app.services.audio_service import AudioService
 
 logger = logging.getLogger(__name__)
@@ -172,17 +172,18 @@ class ConversationService:
         )
 
         t1 = time.perf_counter()
-        assistant_text = await self.llm.generate(history, system_prompt)
+        raw_assistant = await self.llm.generate(history, system_prompt)
         latency["llm_ms"] = int((time.perf_counter() - t1) * 1000)
 
-        action_result = await match_and_run_actions(
-            assistant_text=assistant_text,
-            user_text=user_text,
+        assistant_text, action_result = await run_llm_action(
+            self.db,
+            self.settings,
+            raw_assistant_text=raw_assistant,
             user=user,
-            settings=self.settings,
+            user_text=user_text,
         )
-        if action_result and action_result.spoken_override:
-            assistant_text = action_result.spoken_override
+        if not assistant_text.strip():
+            assistant_text = "Dale."
 
         t2 = time.perf_counter()
         audio_content = await self.tts.synthesize(assistant_text, character.voice_id)

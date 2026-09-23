@@ -14,6 +14,9 @@ from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
+# Proceso de reproducción en curso (ffplay/aplay) para poder detenerlo.
+_playback_proc: Any = None
+
 _ARTIST_RE = re.compile(
     r"(?:de|del|por)\s+([a-záéíóúñü0-9 .'-]{2,40})",
     re.I,
@@ -91,8 +94,24 @@ class YouTubeService:
         if audio_path:
             try:
                 from app.bot.playback import play_audio_file
+                import subprocess
 
-                await asyncio.to_thread(play_audio_file, audio_path)
+                global _playback_proc
+                self.stop_playback()
+                # Reproducir en background para no bloquear el bot entero en canciones largas.
+                for cmd in (
+                    ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", audio_path],
+                    ["aplay", audio_path],
+                ):
+                    try:
+                        _playback_proc = subprocess.Popen(
+                            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                        )
+                        break
+                    except FileNotFoundError:
+                        continue
+                else:
+                    await asyncio.to_thread(play_audio_file, audio_path)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("YouTube playback failed: %s", exc)
 
@@ -137,3 +156,26 @@ class YouTubeService:
                 "webpage_url": info.get("webpage_url"),
                 "audio_path": str(path) if path.exists() else None,
             }
+
+    def stop_playback(self) -> dict[str, Any]:
+        """Detiene la reproducción de audio en curso, si hay."""
+        global _playback_proc
+        stopped = False
+        if _playback_proc is not None:
+            try:
+                if _playback_proc.poll() is None:
+                    _playback_proc.terminate()
+                    try:
+                        _playback_proc.wait(timeout=2)
+                    except Exception:  # noqa: BLE001
+                        _playback_proc.kill()
+                    stopped = True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("stop_playback failed: %s", exc)
+            finally:
+                _playback_proc = None
+        return {
+            "ok": True,
+            "stopped": stopped,
+            "spoken": "Listo, paro la música." if stopped else "No hay música reproduciéndose.",
+        }

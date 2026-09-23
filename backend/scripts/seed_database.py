@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models import Character, User
+from app.models.actions import Action
 
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -79,30 +80,45 @@ def upsert_user(
         user.is_active = True
 
 
+def upsert_actions(db: Session) -> None:
+    seeds = [
+        {
+            "clave": "ver_video",
+            "valor": "madonna",
+            "metodo": "ver_video",
+            "description": "Reproducir música/video del perfil YouTube filtrando por valor",
+        },
+        {
+            "clave": "detener_video",
+            "valor": "",
+            "metodo": "detener_video",
+            "description": "Detener la reproducción de música/video en curso",
+        },
+        {
+            "clave": "finalizar",
+            "valor": "conversacion",
+            "metodo": "finalizar_llm",
+            "description": "Finalizar la conversación y desconectar el turno con el LLM",
+        },
+    ]
+    for item in seeds:
+        row = db.query(Action).filter(Action.clave == item["clave"]).first()
+        if row is None:
+            db.add(Action(**item))
+        else:
+            row.description = item["description"]
+            row.valor = item["valor"]
+            row.metodo = item["metodo"]
+
+
 def main() -> None:
     settings = get_settings()
     db = SessionLocal()
     try:
         upsert_character(db, settings)
-        upsert_user(
-            db,
-            user_id=settings.bot_guest_user_id,
-            username="guest",
-            full_name="Invitado",
-            role="guest",
-        )
-        upsert_user(
-            db,
-            user_id="user_demo",
-            username="demo",
-            full_name="Usuario Demo",
-            gender="otro",
-            age=30,
-            youtube_profile="@demo",
-            role="user",
-        )
+        upsert_actions(db)
         db.commit()
-        print("Seed OK: character TORI, guest, demo")
+        print("Seed OK: character TORI + actions")
     finally:
         db.close()
 
