@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     bot_vad_energy: float = 400.0
     bot_preroll_ms: int = 700
     bot_wake_word: str = "hola tori"
+    bot_wake_window_ms: int = 2500
+    # Keyword spotting local (sherpa-onnx). El STT en la nube corre recién después.
+    bot_kws_model_dir: str = "models/kws-es"
+    bot_kws_repo: str = "jguerrisi/sherpa-onnx-kws-zipformer-es-3M-2026-08-08"
+    bot_kws_score: float = 1.0
+    bot_kws_threshold: float = 0.25
+    bot_kws_trailing_ms: int = 1000
     bot_sample_rate: int = 16000
     bot_guest_user_id: str = "user_guest"
     # Tras TTS: pausa antes de reabrir mic + settle para descartar eco (etiquetas-ia).

@@ -18,9 +18,9 @@ _BACKEND = Path(__file__).resolve().parents[2]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+from app.bot.kws import create_wake_spotter
 from app.bot.playback import MicStream, begin_listening, speak
 from app.bot.vad import UtteranceCapture
-from app.bot.wake import contains_wake_word
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.services.conversation_service import ConversationService
@@ -66,8 +66,9 @@ async def run_bot() -> None:
         end_call_ms=settings.bot_end_call_ms,
     )
 
+    spotter = create_wake_spotter(settings)
     logger.info(
-        "TORI listo. Wake=%r silence=%sms end_call=%sms post_tts=%sms settle=%sms",
+        "TORI listo. Wake local=%r silence=%sms end_call=%sms post_tts=%sms settle=%sms",
         settings.bot_wake_word,
         settings.bot_silence_ms,
         settings.bot_end_call_ms,
@@ -77,32 +78,20 @@ async def run_bot() -> None:
 
     with MicStream(sample_rate=settings.bot_sample_rate) as mic:
         while True:
-            await _idle_and_session(mic, capture, settings)
+            await _idle_and_session(mic, capture, settings, spotter)
 
 
-async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings) -> None:
-    logger.info("Estado=listening (wake word)…")
+async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings, spotter) -> None:
+    logger.info("Estado=listening (VAD + wake local, sin STT)…")
     _listen(settings, mic)
-    wav = None
-    while True:
-        wav = capture.capture_wake_window(mic, window_ms=2500)
-        mic.stop()
-        db = SessionLocal()
-        try:
-            service = ConversationService(db, settings)
-            text = await service.transcribe_only(wav)
-        finally:
-            db.close()
-        if not text:
-            _listen(settings, mic)
-            continue
-        logger.info("Idle STT: %s", text)
-        if contains_wake_word(text, settings.bot_wake_word):
-            logger.info("Wake word detectada")
-            break
-        _listen(settings, mic)
-
-    assert wav is not None
+    wav = capture.listen_for_wake(
+        mic,
+        spotter,
+        trailing_ms=settings.bot_kws_trailing_ms,
+        max_phrase_ms=settings.bot_wake_window_ms,
+    )
+    mic.stop()
+    logger.info("Wake word detectada (%s)", getattr(spotter, "last_keyword", "") or settings.bot_wake_word)
 
     db = SessionLocal()
     try:

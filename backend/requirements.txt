@@ -12,6 +12,8 @@ google-cloud-texttospeech==2.21.1
 python-dotenv==1.0.1
 aiofiles==24.1.0
 numpy>=1.26.0
+sherpa-onnx==1.13.8
+sentencepiece==0.2.2
 sounddevice>=0.5.1
 soundfile>=0.12.1
 scipy>=1.14.0

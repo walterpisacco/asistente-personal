@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 from collections import deque
+from typing import Protocol
 
 import numpy as np
 
 from app.bot.playback import MicStream, pcm16_to_wav_bytes, rms_energy
+
+logger = logging.getLogger("tori.vad")
+
+
+class KeywordSpotter(Protocol):
+    def reset(self) -> None: ...
+
+    def accept(self, pcm: np.ndarray) -> bool: ...
 
 
 class UtteranceCapture:
@@ -140,3 +150,77 @@ class UtteranceCapture:
                 np.zeros(self.sample_rate // 10, dtype=np.int16), self.sample_rate
             )
         return pcm16_to_wav_bytes(np.concatenate(frames), self.sample_rate)
+
+    def listen_for_wake(
+        self,
+        mic: MicStream,
+        spotter: KeywordSpotter,
+        *,
+        trailing_ms: int = 1000,
+        max_phrase_ms: int = 2500,
+    ) -> bytes:
+        """Escucha hasta la wake word. La voz que no coincide se descarta.
+
+        El spotter solo recibe audio después de que el VAD vio voz (más el
+        preroll). Hay que seguir alimentándolo un rato de silencio: el modelo
+        confirma la frase recién después de que la voz terminó.
+        """
+        preroll: deque[np.ndarray] = deque(maxlen=self._preroll_blocks())
+        frames: list[np.ndarray] = []
+        speaking = False
+        detected = False
+        speech_ms = 0
+        silence_ms = 0
+        phrase_ms = 0
+
+        while True:
+            block = mic.read_block(timeout=1.0)
+            if block is None:
+                continue
+            is_voice = rms_energy(block) >= self.vad_energy
+
+            if not speaking:
+                preroll.append(block)
+                if not is_voice:
+                    continue
+                speaking = True
+                frames = list(preroll)
+                preroll.clear()
+                spotter.reset()
+                detected = False
+                for prev in frames:
+                    if spotter.accept(prev):
+                        detected = True
+                        break
+                speech_ms = self.block_ms
+                silence_ms = 0
+                phrase_ms = self.block_ms
+                if detected:
+                    return pcm16_to_wav_bytes(np.concatenate(frames), self.sample_rate)
+                continue
+
+            frames.append(block)
+            phrase_ms += self.block_ms
+            if is_voice:
+                speech_ms += self.block_ms
+                silence_ms = 0
+            else:
+                silence_ms += self.block_ms
+
+            if not detected and spotter.accept(block):
+                detected = True
+
+            timed_out = phrase_ms >= max_phrase_ms
+            if detected:
+                return pcm16_to_wav_bytes(np.concatenate(frames), self.sample_rate)
+
+            if not detected and (timed_out or silence_ms >= trailing_ms):
+                if speech_ms >= self.min_speech_ms:
+                    logger.info("Voz sin wake word (%sms), descartada", speech_ms)
+                speaking = False
+                frames = []
+                detected = False
+                speech_ms = 0
+                silence_ms = 0
+                phrase_ms = 0
+                spotter.reset()

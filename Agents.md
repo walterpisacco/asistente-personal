@@ -2,7 +2,7 @@
 
 ## Qué es este repo
 Bot hecho en Python. El LLM conversa con el usuario; STT/TTS.
-El Bot está continuamente escuchando y la converación se activa cuando escucha la palabra clave HOLA TORI.
+El Bot está continuamente escuchando. La conversación se activa en local: VAD y keyword spotting de HOLA TORI. El STT en la nube corre recién después de esa activación.
 El Bot está contunuamente haciendo reconicimiento de imagen y la conversación se activa cuando encuentra un rostro. 
 Los cambios de turno en la conversacion se realizan por tiempo de silencios cortos configurado en BOT_SILENCE_MS.
 La conversación se desactiva luego de un silencio prolongado configurado en BOT_END_CALL_MS.

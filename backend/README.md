@@ -34,11 +34,28 @@ python scripts/run_bot.py
 
 ## Flujo
 
-1. Idle: escucha hasta detectar «HOLA TORI»
+1. Idle: VAD local y keyword spotting local («HOLA TORI»). No llama al STT hasta activar. El modelo (~5 MB) se descarga solo la primera vez a `backend/models/kws-es/`.
 2. Identifica al hablante solo buscando en `user_embeddings` (si no matchea y no hay guest en DB, rechaza y vuelve a idle)
 3. Inyecta CRM JSON al system prompt
 4. Turnos por `BOT_SILENCE_MS`; cierra por `BOT_END_CALL_MS`
 5. Acciones YouTube vía `config/bot_action_triggers.json`
+
+## Frase de activación
+
+Se configura en `backend/.env`:
+
+```bash
+BOT_WAKE_WORD=hola tori
+```
+
+Al arrancar, el bot la normaliza (minúsculas, sin acentos) y la escribe en `backend/models/kws-es/keywords.wake.txt`. Ese archivo se regenera en cada inicio: no editarlo a mano. `backend/models/` no va al repositorio.
+
+Una sola frase, en español, cubierta por el vocabulario del modelo. Si un token no existe, el arranque falla. Hay que reiniciar el bot para que tome el cambio.
+
+Sensibilidad (también en `.env`):
+
+- `BOT_KWS_THRESHOLD=0.25` — más bajo, más fácil de activar
+- `BOT_KWS_SCORE=1.0` — más alto, más sesgo hacia la frase
 
 ## Estructura
 
