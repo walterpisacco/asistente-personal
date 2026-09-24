@@ -82,7 +82,7 @@ class ConversationService:
         character_id: str | None = None,
         device_id: str | None = None,
     ) -> tuple[Conversation, bytes, str]:
-        character_id = character_id or self.settings.bot_default_character_id
+        character_id = character_id
         character = self.characters.get_by_id(character_id)
         if not character:
             raise RuntimeError(f"Character not found: {character_id}")

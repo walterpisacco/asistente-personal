@@ -2,8 +2,9 @@
 
 ## Qué es este repo
 Bot hecho en Python. El LLM conversa con el usuario; STT/TTS.
-El Bot está continuamente escuchando y la converación se activa cuando escucha la palabra clave HOLA TORI. 
-Los cambios de turno se realizan por tiempo de silencios cortos configurado en BOT_SILENCE_MS.
+El Bot está continuamente escuchando y la converación se activa cuando escucha la palabra clave HOLA TORI.
+El Bot está contunuamente haciendo reconicimiento de imagen y la conversación se activa cuando encuentra un rostro. 
+Los cambios de turno en la conversacion se realizan por tiempo de silencios cortos configurado en BOT_SILENCE_MS.
 La conversación se desactiva luego de un silencio prolongado configurado en BOT_END_CALL_MS.
 
 ## Prompt del bot (runtime)
@@ -19,6 +20,10 @@ La conversación se desactiva luego de un silencio prolongado configurado en BOT
 
 ## Identificación de usuario
 Cuando se activa la conversación con la palabra clave HOLA TORI, el backend busca el embeddings de la voz en la base de datos y devuelve el id, full_name, gender, age, youtube_profile.
+
+Cuando se activa la conversación con la identificación de rostro, el backend busca el embeddings del rostro en la base de datos y devuelve el id, full_name, gender, age, youtube_profile.
+
+
 El bot No debe crear usuarios.
 
 ## Inyección de contexto de usuario

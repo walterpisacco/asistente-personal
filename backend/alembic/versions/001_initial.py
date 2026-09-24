@@ -31,7 +31,7 @@ def upgrade() -> None:
     )
     op.create_table(
         "users",
-        sa.Column("id", sa.String(64), primary_key=True),
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column("username", sa.String(80), nullable=False),
         sa.Column("password_hash", sa.String(255), nullable=False),
         sa.Column("full_name", sa.String(160), nullable=True),
@@ -47,7 +47,7 @@ def upgrade() -> None:
     op.create_table(
         "user_embeddings",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
-        sa.Column("id_user", sa.String(64), sa.ForeignKey("users.id"), nullable=False),
+        sa.Column("id_user", sa.Integer(), sa.ForeignKey("users.id"), nullable=False),
         sa.Column("embedding_voice", sa.JSON(), nullable=False),
         sa.Column("embedding_face", sa.JSON(), nullable=True),
     )
@@ -56,7 +56,7 @@ def upgrade() -> None:
     op.create_table(
         "conversations",
         sa.Column("id", sa.String(64), primary_key=True),
-        sa.Column("user_id", sa.String(64), sa.ForeignKey("users.id"), nullable=False),
+        sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=False),
         sa.Column("character_id", sa.String(64), sa.ForeignKey("characters.id"), nullable=False),
         sa.Column("status", sa.String(32), nullable=True),
         sa.Column("device_id", sa.String(128), nullable=True),
@@ -89,7 +89,7 @@ def upgrade() -> None:
         "interactions",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column("event", sa.String(64), nullable=False),
-        sa.Column("user_id", sa.String(64), nullable=True),
+        sa.Column("user_id", sa.Integer(), nullable=True),
         sa.Column("character_id", sa.String(64), nullable=True),
         sa.Column("conversation_id", sa.String(64), nullable=True),
         sa.Column("device_id", sa.String(128), nullable=True),

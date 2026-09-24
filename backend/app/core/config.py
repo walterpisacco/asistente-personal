@@ -49,7 +49,6 @@ class Settings(BaseSettings):
     bot_preroll_ms: int = 700
     bot_wake_word: str = "hola tori"
     bot_sample_rate: int = 16000
-    bot_default_character_id: str = "char_tori"
     bot_guest_user_id: str = "user_guest"
     # Tras TTS: pausa antes de reabrir mic + settle para descartar eco (etiquetas-ia).
     bot_post_tts_delay_ms: int = 500
