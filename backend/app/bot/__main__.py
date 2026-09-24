@@ -21,6 +21,7 @@ if str(_BACKEND) not in sys.path:
 from app.bot.kws import create_wake_spotter
 from app.bot.playback import MicStream, begin_listening, speak
 from app.bot.vad import UtteranceCapture
+from app.bot.video_player import show_idle
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models.user import User
@@ -72,6 +73,10 @@ async def run_bot() -> None:
     finally:
         db.close()
     spotter = create_wake_spotter(settings, usernames)
+    try:
+        show_idle()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("No se pudo abrir la ventana de inicio: %s", exc)
     logger.info(
         "TORI listo. Frases=%s silence=%sms end_call=%sms post_tts=%sms settle=%sms",
         len(usernames),

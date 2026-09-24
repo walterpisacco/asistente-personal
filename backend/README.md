@@ -37,7 +37,11 @@ python scripts/run_bot.py
 
 ## Frase de activación
 
-No va en `.env`. Al arrancar, el bot toma cada usuario activo y arma `hola soy {username}` (minúsculas, sin acentos: «hola, soy Walter» se escucha como `hola soy walter`).
+```bash
+https://github.com/k2-fsa/sherpa-onnx
+```
+
+El bot toma cada usuario activo y arma `hola soy {username}` (minúsculas, sin acentos: «hola soy walter»).
 
 Esas frases se escriben en `backend/models/kws-es/keywords.wake.txt`. El archivo se regenera en cada inicio: no editarlo a mano. `backend/models/` no va al repositorio.
 

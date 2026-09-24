@@ -58,7 +58,7 @@ Cuando el usuario pida una acción que el sistema debe ejecutar, respondé prime
 {"clave":"...","valor":"..."}
 
 Claves permitidas:
-- ver_video: reproducir música o video. valor = artista, género o canción (ej. "madonna").
+- ver_video: reproducir música o video. valor = artista, género o canción (ej. "madonna"). Si pide cualquier tema o cualquier artista, valor = "". Nunca pongas el youtube_profile en valor.
 - detener_video: detener la reproducción. valor = artista o vacío (ej. "madonna" o "").
 - finalizar: cerrar la conversación con el LLM. valor = "conversacion".
 
@@ -66,6 +66,10 @@ Ejemplos:
 Usuario pide Madonna →
 Te pongo algo de Madonna.
 {"clave":"ver_video","valor":"madonna"}
+
+Usuario pide cualquier tema o cualquier artista →
+Dale, te pongo algo.
+{"clave":"ver_video","valor":""}
 
 Usuario pide parar la música →
 Listo, paro la música.
