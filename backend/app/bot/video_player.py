@@ -1,7 +1,8 @@
 """Ventana única de TORI: fotos en espera y el video de YouTube en el mismo lugar.
 
-Arranca con el bot. `ver_video` cambia al reproductor; `detener_video` vuelve
-a las fotos. El proceso es aparte para no bloquear el loop de audio.
+Arranca con el bot. `ver_video` abre la página del video; `detener_video` vuelve
+a las fotos. La sesión de YouTube queda en disco para los videos siguientes.
+El proceso es aparte para no bloquear el loop de audio.
 """
 
 from __future__ import annotations
@@ -30,9 +31,8 @@ _CHROME_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 )
-# YouTube exige un Referer https que no sea youtube.com. Con base youtube.com
-# el embed responde error 153 o 152-4 y el video no arranca.
-_EMBED_ORIGIN = "https://www.qt.io/"
+# Cookies de la cuenta de YouTube. Una sola sesión para la ventana, en esta máquina.
+_PROFILE_DIR = _BACKEND / "data" / "youtube-web"
 
 
 def idle_html() -> str:
@@ -91,7 +91,7 @@ def idle_html() -> str:
   <div class="veil"></div>
   <div class="caption">
     <h1>TORI</h1>
-    <p>Estoy escuchando</p>
+    <p>Te estoy escuchando..</p>
   </div>
   <script>
     const frames = Array.from(document.querySelectorAll("img"));
@@ -109,56 +109,8 @@ def idle_html() -> str:
 """
 
 
-def embed_html(video_id: str) -> str:
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="referrer" content="strict-origin-when-cross-origin">
-  <style>
-    html, body {{
-      margin: 0; height: 100%; background: #000; overflow: hidden;
-    }}
-    #player {{
-      position: absolute; inset: 0; width: 100%; height: 100%;
-    }}
-  </style>
-</head>
-<body>
-  <div id="player"></div>
-  <script>
-    function onYouTubeIframeAPIReady() {{
-      var player = new YT.Player("player", {{
-        width: window.innerWidth,
-        height: window.innerHeight,
-        videoId: "{video_id}",
-        playerVars: {{
-          autoplay: 1,
-          rel: 0,
-          modestbranding: 1,
-          origin: "https://www.qt.io"
-        }},
-        events: {{
-          onReady: function (event) {{ event.target.playVideo(); }},
-          onError: function (event) {{
-            var code = event.data;
-            if (code === 101 || code === 150 || code === 152 || code === 153) {{
-              location.href = "https://www.youtube.com/watch?v={video_id}&autoplay=1";
-            }}
-          }}
-        }}
-      }});
-      window.addEventListener("resize", function () {{
-        player.setSize(window.innerWidth, window.innerHeight);
-      }});
-    }}
-    var tag = document.createElement("script");
-    tag.src = "https://www.youtube.com/iframe_api";
-    document.head.appendChild(tag);
-  </script>
-</body>
-</html>
-"""
+def watch_url(video_id: str) -> str:
+    return f"https://www.youtube.com/watch?v={video_id}&autoplay=1"
 
 
 def _has_display() -> bool:
@@ -270,16 +222,40 @@ atexit.register(close_video)
 
 
 def _configure_view(view) -> None:
-    from PyQt6.QtWebEngineCore import QWebEngineSettings
+    from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
 
+    _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    profile = QWebEngineProfile("tori-youtube", view)
+    profile.setPersistentStoragePath(str(_PROFILE_DIR))
+    profile.setCachePath(str(_PROFILE_DIR / "cache"))
+    profile.setPersistentCookiesPolicy(
+        QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
+    )
+    profile.setHttpUserAgent(_CHROME_UA)
+
+    class YoutubePage(QWebEnginePage):
+        def createWindow(self, _type):  # noqa: N802
+            popup = YoutubePage(self.profile(), self)
+
+            def open_here(url) -> None:
+                if url.isEmpty() or url.scheme() in ("", "about"):
+                    return
+                self.setUrl(url)
+                popup.deleteLater()
+
+            popup.urlChanged.connect(open_here)
+            return popup
+
+    view.setPage(YoutubePage(profile, view))
     settings = view.settings()
     settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+    settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, True)
+    settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
     settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
     settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, True)
     settings.setAttribute(
         QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
     )
-    view.page().profile().setHttpUserAgent(_CHROME_UA)
 
 
 def _run_window() -> None:
@@ -309,7 +285,7 @@ def _run_window() -> None:
         if not _VIDEO_ID_RE.fullmatch(video_id or ""):
             return
         window.setWindowTitle(title or "YouTube")
-        view.setHtml(embed_html(video_id), QUrl(_EMBED_ORIGIN))
+        view.setUrl(QUrl(watch_url(video_id)))
 
     class Bridge(QObject):
         play = pyqtSignal(str, str)
@@ -369,7 +345,7 @@ def main(argv: list[str] | None = None) -> None:
     view = QWebEngineView(window)
     _configure_view(view)
     window.setCentralWidget(view)
-    view.setHtml(embed_html(args.id), QUrl(_EMBED_ORIGIN))
+    view.setUrl(QUrl(watch_url(args.id)))
     window.show()
     raise SystemExit(app.exec())
 

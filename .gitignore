@@ -222,3 +222,5 @@ backend/static/audio/
 backend/.venv/
 # Modelo de keyword spotting (se descarga al iniciar el bot)
 backend/models/
+# Sesión de YouTube de la ventana (cookies de la cuenta)
+backend/data/youtube-web/
