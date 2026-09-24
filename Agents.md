@@ -2,7 +2,7 @@
 
 ## Qué es este repo
 Bot hecho en Python. El LLM conversa con el usuario; STT/TTS.
-El Bot está continuamente escuchando. La conversación se activa en local: VAD y keyword spotting de HOLA TORI. El STT en la nube corre recién después de esa activación.
+El Bot está continuamente escuchando. La conversación se activa en local: VAD y keyword spotting de «hola soy {username}» por cada usuario activo. El STT en la nube corre recién después de esa activación.
 El Bot está contunuamente haciendo reconicimiento de imagen y la conversación se activa cuando encuentra un rostro. 
 Los cambios de turno en la conversacion se realizan por tiempo de silencios cortos configurado en BOT_SILENCE_MS.
 La conversación se desactiva luego de un silencio prolongado configurado en BOT_END_CALL_MS.
@@ -19,7 +19,7 @@ La conversación se desactiva luego de un silencio prolongado configurado en BOT
 - Preferir frases cortas por turno; 
 
 ## Identificación de usuario
-Cuando se activa la conversación con la palabra clave HOLA TORI, el backend busca el embeddings de la voz en la base de datos y devuelve el id, full_name, gender, age, youtube_profile.
+Cuando se activa la conversación con «hola soy {username}», el backend busca ese username en `users` y devuelve el id, full_name, gender, age, youtube_profile. No usa el embedding de voz para identificar.
 
 Cuando se activa la conversación con la identificación de rostro, el backend busca el embeddings del rostro en la base de datos y devuelve el id, full_name, gender, age, youtube_profile.
 
@@ -33,7 +33,7 @@ Claves relevantes: `id`, `full_name`, `gender`, `age`, `youtube_profile`.
 No hardcodear datos de los usuarios en el system prompt ni en este archivo.
 
 ## Convenciones de producto
-- Flujo: Palabra Clave → Inicio → Identificación → Conversación → Finalización
+- Flujo: «hola soy {username}» → usuario de esa frase → Conversación → Finalización
 - Temas: hablar de cualquier tema.
 - el Bot puede reproducir canciones aleatorias del perfil de youtube filtrando por artista o genero musical.
 - `Agents.md` es contexto para desarrollo en Cursor; no lo lee el LLM

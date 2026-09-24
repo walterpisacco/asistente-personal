@@ -23,8 +23,8 @@ from app.bot.playback import MicStream, begin_listening, speak
 from app.bot.vad import UtteranceCapture
 from app.core.config import get_settings
 from app.core.database import SessionLocal
+from app.models.user import User
 from app.services.conversation_service import ConversationService
-from app.services.voice_id_service import VoiceIdService
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,10 +66,15 @@ async def run_bot() -> None:
         end_call_ms=settings.bot_end_call_ms,
     )
 
-    spotter = create_wake_spotter(settings)
+    db = SessionLocal()
+    try:
+        usernames = _active_usernames(db)
+    finally:
+        db.close()
+    spotter = create_wake_spotter(settings, usernames)
     logger.info(
-        "TORI listo. Wake local=%r silence=%sms end_call=%sms post_tts=%sms settle=%sms",
-        settings.bot_wake_word,
+        "TORI listo. Frases=%s silence=%sms end_call=%sms post_tts=%sms settle=%sms",
+        len(usernames),
         settings.bot_silence_ms,
         settings.bot_end_call_ms,
         settings.bot_post_tts_delay_ms,
@@ -81,37 +86,44 @@ async def run_bot() -> None:
             await _idle_and_session(mic, capture, settings, spotter)
 
 
+def _active_usernames(db) -> list[str]:
+    rows = (
+        db.query(User.username)
+        .filter(User.is_active.is_(True))
+        .order_by(User.username)
+        .all()
+    )
+    names = [name.strip() for (name,) in rows if name and str(name).strip()]
+    if not names:
+        raise RuntimeError("No hay usuarios activos para la frase de activación")
+    return names
+
+
 async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings, spotter) -> None:
     logger.info("Estado=listening (VAD + wake local, sin STT)…")
     _listen(settings, mic)
-    wav = capture.listen_for_wake(
+    capture.listen_for_wake(
         mic,
         spotter,
         trailing_ms=settings.bot_kws_trailing_ms,
         max_phrase_ms=settings.bot_wake_window_ms,
     )
     mic.stop()
-    logger.info("Wake word detectada (%s)", getattr(spotter, "last_keyword", "") or settings.bot_wake_word)
+    username = spotter.matched_username()
+    logger.info("Wake word detectada (%s) usuario=%s", spotter.last_keyword, username or "?")
 
     db = SessionLocal()
     try:
-        voice_id = VoiceIdService(db, settings)
-        user, score = voice_id.identify(wav)
+        user = (
+            db.query(User).filter(User.username == username, User.is_active.is_(True)).first()
+            if username
+            else None
+        )
         if user is None:
-            logger.warning("Usuario no reconocido (score=%.3f).", score)
-            service = ConversationService(db, settings)
-            msg = "No te reconocí. Decí TORI de nuevo cuando quieras."
-            voice_id = (
-                settings.elevenlabs_voice_id
-                if settings.tts_provider == "elevenlabs"
-                else ""
-            )
-            audio = await service.tts.synthesize(msg, voice_id)
-            logger.info("Estado=talking")
-            _speak(settings, mic, audio)
+            logger.warning("Frase %r sin usuario activo.", spotter.last_keyword)
             return
 
-        logger.info("Usuario=%s (%s) score=%.3f", user.id, user.full_name, score)
+        logger.info("Usuario=%s (%s)", user.id, user.full_name)
         service = ConversationService(db, settings)
 
         logger.info("Estado=thinking (intro)")

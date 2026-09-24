@@ -84,6 +84,14 @@ def _token_symbols(tokens_path: Path) -> set[str]:
     return symbols
 
 
+def activation_phrase(username: str) -> str:
+    """«hola, soy Walter» → «hola soy walter»."""
+    name = _normalize(username)
+    if not name:
+        raise ValueError(f"username inválido: {username!r}")
+    return f"hola soy {name}"
+
+
 def encode_keyword_line(
     phrase: str,
     *,
@@ -97,7 +105,7 @@ def encode_keyword_line(
 
     normalized = _normalize(phrase)
     if not normalized:
-        raise ValueError("BOT_WAKE_WORD está vacío")
+        raise ValueError("Frase de activación vacía")
 
     sp = spm.SentencePieceProcessor()
     sp.load(str(bpe_path))
@@ -130,29 +138,42 @@ class WakeWordSpotter:
         self,
         *,
         model_dir: Path,
-        wake_word: str,
+        usernames: list[str],
         sample_rate: int = 16000,
         score: float = 1.0,
         threshold: float = 0.25,
     ) -> None:
         if sample_rate != 16000:
             raise RuntimeError("El keyword spotter local requiere sample rate 16000")
+        if not usernames:
+            raise ValueError("No hay usuarios activos para la frase de activación")
 
         import sherpa_onnx
 
         self.sample_rate = sample_rate
-        self.wake_word = wake_word
         self.last_keyword = ""
+        self._username_by_phrase: dict[str, str] = {}
+        lines: list[str] = []
+        for username in usernames:
+            phrase = activation_phrase(username)
+            if phrase in self._username_by_phrase:
+                other = self._username_by_phrase[phrase]
+                raise ValueError(
+                    f"La frase {phrase!r} corresponde a {other!r} y a {username!r}"
+                )
+            self._username_by_phrase[phrase] = username
+            lines.append(
+                encode_keyword_line(
+                    phrase,
+                    bpe_path=model_dir / "bpe.model",
+                    tokens_path=model_dir / "tokens.txt",
+                    score=score,
+                    threshold=threshold,
+                )
+            )
         keywords_path = model_dir / "keywords.wake.txt"
-        line = encode_keyword_line(
-            wake_word,
-            bpe_path=model_dir / "bpe.model",
-            tokens_path=model_dir / "tokens.txt",
-            score=score,
-            threshold=threshold,
-        )
-        keywords_path.write_text(line + "\n", encoding="utf-8")
-        logger.debug("Wake keyword: %s", line)
+        keywords_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        logger.info("Frases de activación: %s", ", ".join(self._username_by_phrase))
 
         self._kws = sherpa_onnx.KeywordSpotter(
             tokens=str(model_dir / "tokens.txt"),
@@ -192,6 +213,10 @@ class WakeWordSpotter:
         self._new_stream()
         return True
 
+    def matched_username(self) -> str:
+        """Username de la última frase detectada. Vacío si no hubo match."""
+        return self._username_by_phrase.get(self.last_keyword, "")
+
     def matches_wav(self, wav_bytes: bytes) -> bool:
         """Pasa un WAV ya grabado por el spotter (enrolamiento)."""
         pcm = wav_bytes_to_pcm16(wav_bytes)
@@ -208,21 +233,21 @@ class WakeWordSpotter:
         return hit
 
 
-def create_wake_spotter(settings) -> WakeWordSpotter:
+def create_wake_spotter(settings, usernames: list[str]) -> WakeWordSpotter:
     if int(settings.bot_sample_rate) != 16000:
         raise RuntimeError("El keyword spotter local requiere BOT_SAMPLE_RATE=16000")
     model_dir = settings._resolve_path(settings.bot_kws_model_dir)
     ensure_kws_model(model_dir, settings.bot_kws_repo)
     spotter = WakeWordSpotter(
         model_dir=model_dir,
-        wake_word=settings.bot_wake_word,
+        usernames=usernames,
         sample_rate=settings.bot_sample_rate,
         score=settings.bot_kws_score,
         threshold=settings.bot_kws_threshold,
     )
     logger.info(
-        "Wake word local lista (%r, threshold=%s). STT solo después de activar.",
-        settings.bot_wake_word,
+        "Wake local listo (%s usuarios, threshold=%s). STT solo después de activar.",
+        len(usernames),
         settings.bot_kws_threshold,
     )
     return spotter

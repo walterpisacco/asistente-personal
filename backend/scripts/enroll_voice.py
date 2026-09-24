@@ -14,7 +14,7 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
-from app.bot.kws import create_wake_spotter
+from app.bot.kws import activation_phrase, create_wake_spotter
 from app.bot.playback import MicStream
 from app.bot.vad import UtteranceCapture
 from app.core.config import get_settings
@@ -34,8 +34,8 @@ def _read_wav_file(path: Path) -> bytes:
     return path.read_bytes()
 
 
-def _record_wake_phrase(settings, *, phrase: str, max_attempts: int = 3) -> bytes:
-    """Graba una frase corta estilo wake y la valida con el spotter local."""
+def _record_wake_phrase(settings, *, username: str, phrase: str, max_attempts: int = 3) -> bytes:
+    """Graba la frase de activación del usuario y la valida con el spotter local."""
     capture = UtteranceCapture(
         sample_rate=settings.bot_sample_rate,
         silence_ms=_ENROLL_SILENCE_MS,
@@ -44,7 +44,7 @@ def _record_wake_phrase(settings, *, phrase: str, max_attempts: int = 3) -> byte
         vad_energy=settings.bot_vad_energy,
         preroll_ms=_ENROLL_PREROLL_MS,
     )
-    spotter = create_wake_spotter(settings)
+    spotter = create_wake_spotter(settings, [username])
 
     print("Vas a enrolar con la frase corta del wake.")
     print(f"Decí exactamente: «{phrase}» (como cuando activás el bot).")
@@ -89,8 +89,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--phrase",
-        default="hola tori",
-        help="Frase a pedir al usuario (default: hola tori)",
+        default=None,
+        help="Frase a pedir (default: hola soy {username})",
     )
     parser.add_argument(
         "--attempts",
@@ -119,11 +119,15 @@ def main() -> None:
                 f"User not found: {user_id} (no se crea; usá un id de la lista)"
             )
 
+        phrase = args.phrase or activation_phrase(user.username)
         if args.wav:
             audio = _read_wav_file(args.wav)
         else:
             audio = _record_wake_phrase(
-                settings, phrase=args.phrase, max_attempts=max(1, args.attempts)
+                settings,
+                username=user.username,
+                phrase=phrase,
+                max_attempts=max(1, args.attempts),
             )
 
         print(f"Audio a enrolar: {len(audio)} bytes")
@@ -134,7 +138,7 @@ def main() -> None:
             f"Enrolado user={user_id} embedding_id={row.id} "
             f"dims={len(row.embedding_voice)} db={db_name}"
         )
-        print("Tip: volvé a decir «hola tori» para activar el bot.")
+        print(f"Tip: para activar el bot decí «{activation_phrase(user.username)}».")
     finally:
         db.close()
 

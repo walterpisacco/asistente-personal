@@ -1,6 +1,6 @@
 # Asistente personal TORI
 
-Bot de voz headless (sin frontend): escucha continua, wake word **HOLA TORI**, identificación por embedding de voz, conversación STT → LLM → TTS.
+Bot de voz headless (sin frontend): escucha continua, se activa con **hola soy {username}**, conversación STT → LLM → TTS.
 
 ## Requisitos
 
@@ -22,11 +22,6 @@ pip install -r requirements.txt
 alembic upgrade head
 python scripts/seed_database.py
 
-# Enrolar voz de un usuario existente (no crea users)
-python scripts/enroll_voice.py --list
-python scripts/enroll_voice.py --id 1
-# o: python scripts/enroll_voice.py --id 1 --wav /ruta/sample.wav
-
 # Correr el bot
 python scripts/run_bot.py
 # o: python -m app.bot
@@ -34,25 +29,21 @@ python scripts/run_bot.py
 
 ## Flujo
 
-1. Idle: VAD local y keyword spotting local («HOLA TORI»). No llama al STT hasta activar. El modelo (~5 MB) se descarga solo la primera vez a `backend/models/kws-es/`.
-2. Identifica al hablante solo buscando en `user_embeddings` (si no matchea y no hay guest en DB, rechaza y vuelve a idle)
+1. Idle: VAD local y keyword spotting local. No llama al STT hasta activar. El modelo (~5 MB) se descarga solo la primera vez a `backend/models/kws-es/`.
+2. La frase detectada elige al usuario (`hola soy walter`). No usa el embedding de voz.
 3. Inyecta CRM JSON al system prompt
 4. Turnos por `BOT_SILENCE_MS`; cierra por `BOT_END_CALL_MS`
 5. Acciones YouTube vía `config/bot_action_triggers.json`
 
 ## Frase de activación
 
-Se configura en `backend/.env`:
+No va en `.env`. Al arrancar, el bot toma cada usuario activo y arma `hola soy {username}` (minúsculas, sin acentos: «hola, soy Walter» se escucha como `hola soy walter`).
 
-```bash
-BOT_WAKE_WORD=hola tori
-```
+Esas frases se escriben en `backend/models/kws-es/keywords.wake.txt`. El archivo se regenera en cada inicio: no editarlo a mano. `backend/models/` no va al repositorio.
 
-Al arrancar, el bot la normaliza (minúsculas, sin acentos) y la escribe en `backend/models/kws-es/keywords.wake.txt`. Ese archivo se regenera en cada inicio: no editarlo a mano. `backend/models/` no va al repositorio.
+Un usuario nuevo entra en la lista al reiniciar el bot. Si el nombre usa un token que el modelo no tiene, el arranque falla. Dos usernames que normalizan igual también frenan el arranque.
 
-Una sola frase, en español, cubierta por el vocabulario del modelo. Si un token no existe, el arranque falla. Hay que reiniciar el bot para que tome el cambio.
-
-Sensibilidad (también en `.env`):
+Sensibilidad (en `.env`):
 
 - `BOT_KWS_THRESHOLD=0.25` — más bajo, más fácil de activar
 - `BOT_KWS_SCORE=1.0` — más alto, más sesgo hacia la frase
