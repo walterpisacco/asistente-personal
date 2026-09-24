@@ -100,12 +100,15 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
         if user is None:
             logger.warning("Usuario no reconocido (score=%.3f).", score)
             service = ConversationService(db, settings)
-            character = service.characters.get_by_id(settings.bot_default_character_id)
-            if character:
-                msg = "No te reconocí. Decí TORI de nuevo cuando quieras."
-                audio = await service.tts.synthesize(msg, character.voice_id)
-                logger.info("Estado=talking")
-                _speak(settings, mic, audio)
+            msg = "No te reconocí. Decí TORI de nuevo cuando quieras."
+            voice_id = (
+                settings.elevenlabs_voice_id
+                if settings.tts_provider == "elevenlabs"
+                else ""
+            )
+            audio = await service.tts.synthesize(msg, voice_id)
+            logger.info("Estado=talking")
+            _speak(settings, mic, audio)
             return
 
         logger.info("Usuario=%s (%s) score=%.3f", user.id, user.full_name, score)
