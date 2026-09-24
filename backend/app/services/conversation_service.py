@@ -7,6 +7,7 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
+from app.models.actions import Action
 from app.models.character import Character
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
@@ -14,6 +15,7 @@ from app.models.user import User
 from app.providers.llm.factory import create_llm_provider
 from app.providers.stt.factory import create_stt_provider
 from app.providers.tts.factory import create_tts_provider
+from app.repositories.action_repository import ActionRepository
 from app.repositories.character_repository import CharacterRepository
 from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.user_repository import UserRepository
@@ -41,15 +43,34 @@ def build_user_crm(user: User) -> dict[str, Any]:
     }
 
 
+def build_actions_catalog(actions: list[Action]) -> str:
+    """JSON compacto de la tabla actions para que el LLM elija clave y valor."""
+    payload = [
+        {
+            "clave": row.clave,
+            "description": row.description,
+            "valor": row.valor,
+        }
+        for row in actions
+    ]
+    return (
+        "ACCIONES_DISPONIBLES:\n"
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
 def build_llm_system_prompt(
     character: Character,
     user: Optional[User],
     file_prompt: str = "",
+    actions: list[Action] | None = None,
 ) -> str:
     parts: list[str] = []
     base = (file_prompt or "").strip() or (character.system_prompt or "").strip()
     if base:
         parts.append(base)
+    if actions is not None:
+        parts.append(build_actions_catalog(actions))
     if user:
         parts.append(_USER_CONTEXT_INSTRUCTIONS)
         parts.append(
@@ -70,6 +91,9 @@ class ConversationService:
         self.llm = create_llm_provider(self.settings)
         self.stt = create_stt_provider(self.settings)
         self.tts = create_tts_provider(self.settings)
+
+    def _actions(self) -> list[Action]:
+        return ActionRepository(self.db).list_all()
 
     def _tts_extension(self) -> str:
         if self.settings.tts_provider == "mock":
@@ -100,7 +124,10 @@ class ConversationService:
 
         if self.settings.bot_opening_mode == "llm":
             system_prompt = build_llm_system_prompt(
-                character, user, self.settings.resolved_bot_system_prompt
+                character,
+                user,
+                self.settings.resolved_bot_system_prompt,
+                self._actions(),
             )
             intro_text = await self.llm.generate(
                 [{"role": "user", "content": "Saludame brevemente para empezar."}],
@@ -170,7 +197,10 @@ class ConversationService:
             for m in self.conversations.get_by_id(conversation.id).messages  # type: ignore[union-attr]
         ]
         system_prompt = build_llm_system_prompt(
-            character, user, self.settings.resolved_bot_system_prompt
+            character,
+            user,
+            self.settings.resolved_bot_system_prompt,
+            self._actions(),
         )
 
         t1 = time.perf_counter()
