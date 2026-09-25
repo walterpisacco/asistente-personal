@@ -21,7 +21,7 @@ if str(_BACKEND) not in sys.path:
 from app.bot.kws import create_wake_spotter
 from app.bot.playback import MicStream, begin_listening, speak
 from app.bot.vad import UtteranceCapture
-from app.bot.video_player import show_idle
+from app.bot.video_player import is_showing_video, return_to_idle, show_idle
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models.user import User
@@ -86,7 +86,10 @@ async def run_bot() -> None:
         settings.bot_mic_settle_ms,
     )
 
-    with MicStream(sample_rate=settings.bot_sample_rate) as mic:
+    with MicStream(
+        sample_rate=settings.bot_sample_rate,
+        input_gain=settings.bot_mic_input_gain,
+    ) as mic:
         while True:
             await _idle_and_session(mic, capture, settings, spotter)
 
@@ -112,17 +115,31 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
         spotter,
         trailing_ms=settings.bot_kws_trailing_ms,
         max_phrase_ms=settings.bot_wake_window_ms,
+        trace=bool(getattr(settings, "bot_wake_trace", False)),
     )
     mic.stop()
     username = spotter.matched_username()
-    logger.info("Wake word detectada (%s) usuario=%s", spotter.last_keyword, username or "?")
+    command = spotter.matched_command()
+    logger.info(
+        "Wake word detectada (%s) usuario=%s cmd=%s",
+        spotter.last_keyword,
+        username or "-",
+        command or "-",
+    )
+
+    if not username:
+        if command == "detener_video" and is_showing_video():
+            return_to_idle()
+        elif command:
+            logger.info("Comando %s fuera de contexto, ignorado", command)
+        else:
+            logger.warning("Frase %r sin usuario activo.", spotter.last_keyword)
+        return
 
     db = SessionLocal()
     try:
         user = (
             db.query(User).filter(User.username == username, User.is_active.is_(True)).first()
-            if username
-            else None
         )
         if user is None:
             logger.warning("Frase %r sin usuario activo.", spotter.last_keyword)
@@ -138,6 +155,43 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
         _speak(settings, mic, intro_audio)
 
         while True:
+            if is_showing_video():
+                # Sin STT/LLM: solo wake (retomar charla) o detener video.
+                logger.info(
+                    "Estado=listening (video: wake o «detener video», sin STT)…"
+                )
+                _listen(settings, mic)
+                capture.listen_for_wake(
+                    mic,
+                    spotter,
+                    trailing_ms=settings.bot_kws_trailing_ms,
+                    max_phrase_ms=settings.bot_wake_window_ms,
+                    trace=bool(getattr(settings, "bot_wake_trace", False)),
+                )
+                mic.stop()
+                command = spotter.matched_command()
+                if command == "detener_video":
+                    logger.info("KWS detener_video → paro reproducción")
+                    return_to_idle()
+                    bye = "Listo, paro el video."
+                    character = service.characters.get_by_id(conversation.character_id)
+                    if character:
+                        stop_audio = await service.tts.synthesize(bye, character.voice_id)
+                        logger.info("Estado=talking (stop video)")
+                        _speak(settings, mic, stop_audio)
+                    continue
+                if spotter.matched_username():
+                    logger.info(
+                        "Wake durante video (%s) → retomo conversación",
+                        spotter.last_keyword,
+                    )
+                    continue
+                logger.info(
+                    "Keyword %r ignorada en modo video",
+                    spotter.last_keyword,
+                )
+                continue
+
             logger.info("Estado=listening")
             _listen(settings, mic)
             utterance, reason = capture.capture_utterance(
@@ -149,6 +203,8 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
 
             if reason == "idle_end_call" or utterance is None:
                 logger.info("Fin de conversación por silencio prolongado")
+                if is_showing_video():
+                    return_to_idle()
                 service.end_conversation(conversation.id)
                 bye = "Chau, acá estoy cuando me necesites."
                 character = service.characters.get_by_id(conversation.character_id)
@@ -175,8 +231,11 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
                 logger.info("Action: %s", action)
                 if action.get("end_session"):
                     logger.info("Acción finalizar → cerrando conversación")
+                    if is_showing_video():
+                        return_to_idle()
                     service.end_conversation(conversation.id)
                     break
+            # Si abrió video, la próxima vuelta entra al modo KWS sin STT.
     finally:
         mic.stop()
         db.close()

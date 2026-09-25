@@ -84,12 +84,25 @@ def _token_symbols(tokens_path: Path) -> set[str]:
     return symbols
 
 
-def activation_phrase(username: str) -> str:
-    """«hola, soy Walter» → «hola soy walter»."""
+def activation_phrases(username: str) -> list[str]:
+    """Frases de wake para un usuario: «hola soy walter» y «soy walter»."""
     name = _normalize(username)
     if not name:
         raise ValueError(f"username inválido: {username!r}")
-    return f"hola soy {name}"
+    return [f"hola soy {name}", f"soy {name}"]
+
+
+def activation_phrase(username: str) -> str:
+    """Frase canónica (enrolamiento / tips): «hola soy {name}»."""
+    return activation_phrases(username)[0]
+
+
+# Frases locales (KWS) → comando. Sin STT; útiles mientras hay video.
+VIDEO_COMMAND_PHRASES: dict[str, str] = {
+    "detener video": "detener_video",
+    "para el video": "detener_video",
+    "parar video": "detener_video",
+}
 
 
 def encode_keyword_line(
@@ -153,15 +166,29 @@ class WakeWordSpotter:
         self.sample_rate = sample_rate
         self.last_keyword = ""
         self._username_by_phrase: dict[str, str] = {}
+        self._command_by_phrase: dict[str, str] = {}
         lines: list[str] = []
         for username in usernames:
-            phrase = activation_phrase(username)
-            if phrase in self._username_by_phrase:
-                other = self._username_by_phrase[phrase]
-                raise ValueError(
-                    f"La frase {phrase!r} corresponde a {other!r} y a {username!r}"
+            for phrase in activation_phrases(username):
+                if phrase in self._username_by_phrase:
+                    other = self._username_by_phrase[phrase]
+                    raise ValueError(
+                        f"La frase {phrase!r} corresponde a {other!r} y a {username!r}"
+                    )
+                self._username_by_phrase[phrase] = username
+                lines.append(
+                    encode_keyword_line(
+                        phrase,
+                        bpe_path=model_dir / "bpe.model",
+                        tokens_path=model_dir / "tokens.txt",
+                        score=score,
+                        threshold=threshold,
+                    )
                 )
-            self._username_by_phrase[phrase] = username
+        for phrase, command in VIDEO_COMMAND_PHRASES.items():
+            if phrase in self._username_by_phrase or phrase in self._command_by_phrase:
+                raise ValueError(f"Frase de comando duplicada: {phrase!r}")
+            self._command_by_phrase[phrase] = command
             lines.append(
                 encode_keyword_line(
                     phrase,
@@ -173,7 +200,11 @@ class WakeWordSpotter:
             )
         keywords_path = model_dir / "keywords.wake.txt"
         keywords_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        logger.info("Frases de activación: %s", ", ".join(self._username_by_phrase))
+        logger.info(
+            "Frases de activación: %s | comandos: %s",
+            ", ".join(self._username_by_phrase),
+            ", ".join(self._command_by_phrase),
+        )
 
         self._kws = sherpa_onnx.KeywordSpotter(
             tokens=str(model_dir / "tokens.txt"),
@@ -210,6 +241,13 @@ class WakeWordSpotter:
         if not result:
             return False
         self.last_keyword = result.replace("_", " ")
+        logger.info(
+            "KWS hit raw=%r → %r usuario=%s cmd=%s",
+            result,
+            self.last_keyword,
+            self.matched_username() or "-",
+            self.matched_command() or "-",
+        )
         self._new_stream()
         return True
 
@@ -217,6 +255,9 @@ class WakeWordSpotter:
         """Username de la última frase detectada. Vacío si no hubo match."""
         return self._username_by_phrase.get(self.last_keyword, "")
 
+    def matched_command(self) -> str:
+        """Comando de la última frase (p.ej. detener_video). Vacío si no aplica."""
+        return self._command_by_phrase.get(self.last_keyword, "")
     def matches_wav(self, wav_bytes: bytes) -> bool:
         """Pasa un WAV ya grabado por el spotter (enrolamiento)."""
         pcm = wav_bytes_to_pcm16(wav_bytes)

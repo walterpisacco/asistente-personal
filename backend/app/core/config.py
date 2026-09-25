@@ -54,7 +54,9 @@ class Settings(BaseSettings):
     bot_kws_score: float = 1.0
     bot_kws_threshold: float = 0.25
     bot_kws_trailing_ms: int = 1000
+    bot_wake_trace: bool = False
     bot_sample_rate: int = 16000
+    bot_mic_input_gain: float = 0.35
     bot_guest_user_id: str = "user_guest"
     # Tras TTS: pausa antes de reabrir mic + settle para descartar eco (etiquetas-ia).
     bot_post_tts_delay_ms: int = 500

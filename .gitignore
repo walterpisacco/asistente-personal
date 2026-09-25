@@ -224,3 +224,4 @@ backend/.venv/
 backend/models/
 # Sesión de YouTube de la ventana (cookies de la cuenta)
 backend/data/youtube-web/
+backend/data/youtube-chrome/

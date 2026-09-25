@@ -94,10 +94,19 @@ class MicStream:
     cerrado mientras el bot habla (TTS).
     """
 
-    def __init__(self, sample_rate: int = 16000, block_ms: int = 30) -> None:
+    def __init__(
+        self,
+        sample_rate: int = 16000,
+        block_ms: int = 30,
+        *,
+        input_gain: float = 0.35,
+    ) -> None:
         self.sample_rate = sample_rate
         self.block_ms = block_ms
         self.block_size = max(1, int(sample_rate * block_ms / 1000))
+        # PipeWire/ALSA a veces entrega float >|1| y con DC; el clip duro a ±1
+        # satura el PCM y el KWS deja de reconocer.
+        self.input_gain = max(0.05, float(input_gain))
         self._q: deque[np.ndarray] = deque()
         self._stream = None
         self._sd = _sounddevice()
@@ -107,9 +116,12 @@ class MicStream:
         return self._stream is not None
 
     def _callback(self, indata, frames, time_info, status) -> None:  # noqa: ANN001
-        mono = indata[:, 0].copy() if indata.ndim > 1 else indata.copy()
-        pcm = np.clip(mono, -1.0, 1.0)
-        self._q.append((pcm * 32767).astype(np.int16))
+        mono = indata[:, 0] if indata.ndim > 1 else indata
+        x = mono.astype(np.float64, copy=False)
+        # Quitar DC del bloque (el device llega con offset ~-1.7 y picos >|1|).
+        x = x - np.mean(x)
+        pcm = np.clip(x * self.input_gain * 32767.0, -32768, 32767).astype(np.int16)
+        self._q.append(pcm)
 
     def clear(self) -> None:
         self._q.clear()

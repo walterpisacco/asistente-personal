@@ -158,13 +158,19 @@ class UtteranceCapture:
         *,
         trailing_ms: int = 1000,
         max_phrase_ms: int = 2500,
+        trace: bool = False,
+        deadline_monotonic: float | None = None,
     ) -> bytes:
         """Escucha hasta la wake word. La voz que no coincide se descarta.
 
         El spotter solo recibe audio después de que el VAD vio voz (más el
         preroll). Hay que seguir alimentándolo un rato de silencio: el modelo
         confirma la frase recién después de que la voz terminó.
+
+        Si `deadline_monotonic` se cumple sin wake, lanza TimeoutError.
         """
+        import time
+
         preroll: deque[np.ndarray] = deque(maxlen=self._preroll_blocks())
         frames: list[np.ndarray] = []
         speaking = False
@@ -172,55 +178,129 @@ class UtteranceCapture:
         speech_ms = 0
         silence_ms = 0
         phrase_ms = 0
+        peak_energy = 0.0
+        blocks_fed = 0
+        idle_trace_ms = 0
 
         while True:
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                raise TimeoutError("wake wait deadline")
             block = mic.read_block(timeout=1.0)
             if block is None:
                 continue
-            is_voice = rms_energy(block) >= self.vad_energy
+            energy = rms_energy(block)
+            is_voice = energy >= self.vad_energy
 
             if not speaking:
                 preroll.append(block)
                 if not is_voice:
+                    if trace:
+                        idle_trace_ms += self.block_ms
+                        if idle_trace_ms >= 1000:
+                            logger.info(
+                                "trace idle: rms=%.0f (umbral VAD=%.0f)",
+                                energy,
+                                self.vad_energy,
+                            )
+                            idle_trace_ms = 0
                     continue
                 speaking = True
+                idle_trace_ms = 0
                 frames = list(preroll)
                 preroll.clear()
                 spotter.reset()
                 detected = False
+                peak_energy = max(rms_energy(f) for f in frames) if frames else energy
+                blocks_fed = 0
                 for prev in frames:
+                    blocks_fed += 1
                     if spotter.accept(prev):
                         detected = True
                         break
                 speech_ms = self.block_ms
                 silence_ms = 0
                 phrase_ms = self.block_ms
+                if trace or logger.isEnabledFor(logging.DEBUG):
+                    logger.info(
+                        "trace voz: rms=%.0f peak=%.0f preroll=%sms → kws",
+                        energy,
+                        peak_energy,
+                        len(frames) * self.block_ms,
+                    )
                 if detected:
+                    logger.info(
+                        "Wake OK en preroll (peak_rms=%.0f phrase=%sms)",
+                        peak_energy,
+                        phrase_ms,
+                    )
                     return pcm16_to_wav_bytes(np.concatenate(frames), self.sample_rate)
                 continue
 
             frames.append(block)
             phrase_ms += self.block_ms
+            peak_energy = max(peak_energy, energy)
             if is_voice:
                 speech_ms += self.block_ms
                 silence_ms = 0
             else:
                 silence_ms += self.block_ms
 
-            if not detected and spotter.accept(block):
-                detected = True
+            if not detected:
+                blocks_fed += 1
+                if spotter.accept(block):
+                    detected = True
 
             timed_out = phrase_ms >= max_phrase_ms
             if detected:
+                logger.info(
+                    "Wake OK (peak_rms=%.0f speech=%sms phrase=%sms blocks=%s)",
+                    peak_energy,
+                    speech_ms,
+                    phrase_ms,
+                    blocks_fed,
+                )
                 return pcm16_to_wav_bytes(np.concatenate(frames), self.sample_rate)
 
             if not detected and (timed_out or silence_ms >= trailing_ms):
-                if speech_ms >= self.min_speech_ms:
-                    logger.info("Voz sin wake word (%sms), descartada", speech_ms)
+                # Al cortar por timeout a menudo falta el silencio final que el
+                # KWS necesita (num_trailing_blanks). Empujamos ceros y reintentamos.
+                if timed_out and not detected:
+                    silence_block = np.zeros(
+                        max(1, int(self.sample_rate * self.block_ms / 1000)),
+                        dtype=np.int16,
+                    )
+                    for _ in range(max(1, trailing_ms // self.block_ms)):
+                        if spotter.accept(silence_block):
+                            detected = True
+                            break
+                    if detected:
+                        logger.info(
+                            "Wake OK tras flush silencio (peak_rms=%.0f phrase=%sms)",
+                            peak_energy,
+                            phrase_ms,
+                        )
+                        return pcm16_to_wav_bytes(
+                            np.concatenate(frames), self.sample_rate
+                        )
+
+                reason = "timeout" if timed_out else "silence"
+                if speech_ms >= self.min_speech_ms or trace:
+                    logger.info(
+                        "Voz sin wake word (%s): speech=%sms phrase=%sms "
+                        "peak_rms=%.0f vad=%.0f blocks_kws=%s → descartada",
+                        reason,
+                        speech_ms,
+                        phrase_ms,
+                        peak_energy,
+                        self.vad_energy,
+                        blocks_fed,
+                    )
                 speaking = False
                 frames = []
                 detected = False
                 speech_ms = 0
                 silence_ms = 0
                 phrase_ms = 0
+                peak_energy = 0.0
+                blocks_fed = 0
                 spotter.reset()

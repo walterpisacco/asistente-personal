@@ -52,7 +52,13 @@ def _record_wake_phrase(settings, *, username: str, phrase: str, max_attempts: i
 
     last_wav: bytes | None = None
 
-    with MicStream(sample_rate=settings.bot_sample_rate) as mic:
+    with MicStream(
+        sample_rate=settings.bot_sample_rate,
+        input_gain=settings.bot_mic_input_gain,
+    ) as mic:
+        from app.bot.playback import begin_listening
+
+        begin_listening(mic, settle_ms=settings.bot_mic_settle_ms)
         for attempt in range(1, max_attempts + 1):
             print(f"\nIntento {attempt}/{max_attempts}: hablá ahora…")
             wav = capture.capture_wake_window(mic, window_ms=_WAKE_WINDOW_MS)
