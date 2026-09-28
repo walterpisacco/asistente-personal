@@ -106,12 +106,17 @@ class ConversationService:
         character_id: str | None = None,
         device_id: str | None = None,
     ) -> tuple[Conversation, bytes, str]:
-        if character_id:
-            character = self.characters.get_by_id(str(character_id))
-        else:
-            character = self.characters.first()
+        # El personaje sale de la base: user.character_id (o override explícito).
+        cid = (character_id or user.character_id or "").strip()
+        if not cid:
+            raise RuntimeError(
+                f"El usuario {user.username!r} no tiene character_id en la base"
+            )
+        character = self.characters.get_by_id(cid)
         if not character:
-            raise RuntimeError("No hay un personaje en la base para iniciar la conversación")
+            raise RuntimeError(
+                f"Character {cid!r} no existe (user={user.username!r})"
+            )
 
         conversation = Conversation(
             id=f"conv_{uuid.uuid4().hex[:10]}",

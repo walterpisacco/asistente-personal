@@ -23,3 +23,4 @@ class Character(Base):
     )
 
     conversations = relationship("Conversation", back_populates="character")
+    users = relationship("User", back_populates="character")

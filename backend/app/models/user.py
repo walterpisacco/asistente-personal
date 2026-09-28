@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Integer, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -19,11 +19,20 @@ class User(Base):
     youtube_profile: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="operator")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    character_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("characters.id"), nullable=False, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
+    character = relationship("Character", back_populates="users")
     conversations = relationship("Conversation", back_populates="user")
+    recordatories = relationship(
+        "Recordatory",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     user_embeddings = relationship(
         "UserEmbedding",
         back_populates="user",

@@ -97,26 +97,36 @@ Reglas de acción:
 """
 
 def upsert_users(db: Session) -> None:
+    existing = db.query(User).filter(User.username == "walter").first()
+    if existing is not None:
+        if not existing.character_id:
+            existing.character_id = "char_tori"
+        return
     user = User(
-        username= "walter",
-        password_hash= "",
-        full_name= "walter",
-        gender= "Chico",
-        age= 56,
-        youtube_profile= "wpisacco",
-        role= "Admin",
-        is_active= 1
+        username="walter",
+        password_hash="",
+        full_name="walter",
+        gender="Chico",
+        age=56,
+        youtube_profile="wpisacco",
+        role="Admin",
+        is_active=True,
+        character_id="char_tori",
     )
     db.add(user)
 
+
 def upsert_character(db: Session) -> None:
+    existing = db.query(Character).filter(Character.id == "char_tori").first()
+    if existing is not None:
+        return
     char = Character(
-        id=1,
+        id="char_tori",
         name="TORI",
         description="Asistente personal de voz",
         system_prompt=TORI_PROMPT,
-        voice_provider="",
-        voice_id="",
+        voice_provider="deepgram",
+        voice_id="aura-2-celeste-es",
         animation={},
     )
     db.add(char)
@@ -156,11 +166,12 @@ def upsert_actions(db: Session) -> None:
 def main() -> None:
     db = SessionLocal()
     try:
-        upsert_users(db)
+        # Character primero: users.character_id es FK.
         upsert_character(db)
+        upsert_users(db)
         upsert_actions(db)
         db.commit()
-        print("Seed OK: character TORI + actions")
+        print("Seed OK: character TORI + users + actions")
     finally:
         db.close()
 
