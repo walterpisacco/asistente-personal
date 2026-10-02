@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import html
 import json
 import logging
 import os
@@ -24,6 +25,26 @@ import time
 from pathlib import Path
 
 logger = logging.getLogger("tori.video")
+
+# Frases hablables para el panel idle (clave → plantilla; {valor} opcional).
+_SUGGESTION_PHRASES: dict[str, str] = {
+    "ver_video": "Poné música de {valor}",
+    "detener_video": "Pará la música",
+    "agregar_recordatorio": "Recordame ir al dentista mañana",
+    "dame_recordatorios": "¿Qué recordatorios tengo?",
+}
+_SUGGESTION_ORDER = (
+    "ver_video",
+    "agregar_recordatorio",
+    "dame_recordatorios",
+    "detener_video",
+)
+_SUGGESTION_FALLBACK = [
+    {"clave": "ver_video", "phrase": "Poné música de Madonna"},
+    {"clave": "agregar_recordatorio", "phrase": "Recordame ir al dentista mañana"},
+    {"clave": "dame_recordatorios", "phrase": "¿Qué recordatorios tengo?"},
+    {"clave": "detener_video", "phrase": "Pará la música"},
+]
 
 _BACKEND = Path(__file__).resolve().parents[2]
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,32}$")
@@ -67,104 +88,342 @@ def _find_chrome() -> str | None:
     return None
 
 
-def idle_html() -> str:
+def _phrase_for_action(clave: str, valor: str = "") -> str | None:
+    template = _SUGGESTION_PHRASES.get(clave)
+    if not template:
+        return None
+    if "{valor}" in template:
+        sample = (valor or "").strip() or "Madonna"
+        return template.replace("{valor}", sample)
+    return template
+
+
+def _load_action_suggestions() -> list[dict[str, str]]:
+    """Sugerencias hablables desde la tabla actions; fallback estático si falla DB."""
+    try:
+        from app.core.database import SessionLocal
+        from app.repositories.action_repository import ActionRepository
+
+        db = SessionLocal()
+        try:
+            rows = ActionRepository(db).list_all()
+        finally:
+            db.close()
+        by_clave = {r.clave.strip().lower(): r for r in rows}
+        out: list[dict[str, str]] = []
+        for clave in _SUGGESTION_ORDER:
+            row = by_clave.get(clave)
+            if row is None:
+                continue
+            phrase = _phrase_for_action(clave, row.valor or "")
+            if phrase:
+                out.append({"clave": clave, "phrase": phrase})
+        if out:
+            return out
+    except Exception as exc:
+        logger.warning("No pude cargar actions para idle: %s", exc)
+    return list(_SUGGESTION_FALLBACK)
+
+
+def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
+    items = suggestions if suggestions is not None else _load_action_suggestions()
     seeds = random.sample(range(1, 900), 6)
     images = "\n".join(
-        f'<img class="{"on" if i == 0 else ""}" src="https://picsum.photos/1280/800?random={seed}" alt="">'
+        f'<img class="{"on" if i == 0 else ""}" '
+        f'src="https://picsum.photos/1280/800?random={seed}" alt="">'
         for i, seed in enumerate(seeds)
     )
+    chips = "\n".join(
+        f'<li class="chip{" active" if i == 0 else ""}" data-i="{i}">'
+        f'<span class="chip-label">Probá decir</span>'
+        f'<span class="chip-phrase">{html.escape(item["phrase"])}</span>'
+        f"</li>"
+        for i, item in enumerate(items)
+    )
+    hero_phrase = html.escape(items[0]["phrase"]) if items else "Decime en qué te ayudo"
     return f"""<!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
+    :root {{
+      --bg0: #0b1c2c;
+      --bg1: #123a4a;
+      --bg2: #1a6b72;
+      --text: #f2f7fa;
+      --muted: rgba(242, 247, 250, .72);
+      --chip: rgba(12, 28, 40, .42);
+      --chip-active: rgba(90, 200, 210, .22);
+      --accent: #7edce6;
+      --card-radius: 22px;
+    }}
+    * {{ box-sizing: border-box; }}
     html, body {{
       margin: 0; height: 100%; overflow: hidden;
-      background: #12141a; color: #f4f1ea;
-      font-family: "Iowan Old Style", Palatino, Georgia, serif;
+      color: var(--text);
+      font-family: "Segoe UI", "Helvetica Neue", "Avenir Next", sans-serif;
+      background: radial-gradient(ellipse at 40% 35%, var(--bg2) 0%, var(--bg1) 42%, var(--bg0) 100%);
+    }}
+    .shell {{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: clamp(16px, 2.2vw, 28px);
+      height: 100%;
+      padding: clamp(18px, 2.4vw, 32px);
+      position: relative;
+      z-index: 1;
     }}
     .aurora {{
-      position: absolute; inset: -25%;
+      position: absolute; inset: -20%;
       background:
-        radial-gradient(circle at 20% 30%, rgba(196, 148, 106, .45), transparent 42%),
-        radial-gradient(circle at 80% 20%, rgba(90, 122, 158, .4), transparent 40%),
-        radial-gradient(circle at 60% 80%, rgba(92, 64, 84, .45), transparent 46%);
-      animation: drift 22s ease-in-out infinite alternate;
+        radial-gradient(circle at 18% 28%, rgba(80, 190, 200, .28), transparent 42%),
+        radial-gradient(circle at 78% 18%, rgba(40, 110, 150, .35), transparent 40%),
+        radial-gradient(circle at 55% 85%, rgba(20, 70, 90, .4), transparent 48%);
+      animation: drift 24s ease-in-out infinite alternate;
+      pointer-events: none;
+      z-index: 0;
     }}
-    img {{
-      position: absolute; inset: 0; width: 100%; height: 100%;
-      object-fit: cover; opacity: 0;
-      transition: opacity 1.8s ease;
+    .panel-left {{
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      padding: clamp(8px, 1vw, 16px) 4px;
     }}
-    img.on {{ opacity: 1; }}
-    .veil {{
-      position: absolute; inset: 0;
-      background: linear-gradient(to top, rgba(10,10,14,.78), rgba(10,10,14,.12) 46%, rgba(10,10,14,.4));
+    .topbar {{
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: clamp(18px, 3vh, 36px);
+    }}
+    .brand {{
+      margin: 0;
+      font-size: clamp(42px, 7vw, 72px);
+      font-weight: 650;
+      letter-spacing: .14em;
+      line-height: 1;
     }}
     .clock {{
-      position: absolute; top: 42px; right: 48px; z-index: 2;
       text-align: right;
+      flex-shrink: 0;
     }}
     .clock .time {{
-      margin: 0; font-size: 72px; font-weight: 500;
-      letter-spacing: .06em; line-height: 1;
+      margin: 0;
+      font-size: clamp(28px, 4.2vw, 44px);
+      font-weight: 500;
+      letter-spacing: .04em;
       font-variant-numeric: tabular-nums;
+      line-height: 1;
     }}
     .clock .date {{
-      margin: 10px 0 0; font-family: system-ui, sans-serif;
-      font-size: 18px; letter-spacing: .06em; opacity: .82;
+      margin: 8px 0 0;
+      font-size: clamp(12px, 1.4vw, 15px);
+      color: var(--muted);
       text-transform: capitalize;
+      max-width: 18ch;
     }}
-    .caption {{
-      position: absolute; left: 48px; bottom: 42px; z-index: 2;
+    .hero {{
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-height: 0;
     }}
-    h1 {{
-      margin: 0; font-size: 68px; font-weight: 500; letter-spacing: .22em;
+    .hero-lead {{
+      margin: 0 0 10px;
+      font-size: clamp(15px, 1.8vw, 18px);
+      color: var(--muted);
+      letter-spacing: .02em;
     }}
-    p {{
-      margin: 10px 0 0; font-family: system-ui, sans-serif;
-      font-size: 18px; letter-spacing: .04em; opacity: .86;
+    .hero-phrase {{
+      margin: 0;
+      font-size: clamp(26px, 3.4vw, 40px);
+      font-weight: 560;
+      line-height: 1.25;
+      max-width: 18ch;
+      transition: opacity .45s ease, transform .45s ease;
+    }}
+    .hero-phrase.swap {{
+      opacity: 0;
+      transform: translateY(8px);
+    }}
+    .suggestions {{
+      list-style: none;
+      margin: clamp(22px, 3.5vh, 40px) 0 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }}
+    .chip {{
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 12px 16px;
+      border-radius: 16px;
+      background: var(--chip);
+      border: 1px solid transparent;
+      opacity: .55;
+      transition: opacity .4s ease, background .4s ease, border-color .4s ease,
+        transform .4s ease;
+    }}
+    .chip.active {{
+      opacity: 1;
+      background: var(--chip-active);
+      border-color: rgba(126, 220, 230, .45);
+      transform: translateX(4px);
+    }}
+    .chip-label {{
+      font-size: 11px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      opacity: .85;
+    }}
+    .chip-phrase {{
+      font-size: clamp(14px, 1.6vw, 17px);
+      font-weight: 500;
+    }}
+    .foot {{
+      margin-top: auto;
+      padding-top: 16px;
+    }}
+    .listen {{
+      margin: 0 0 8px;
+      font-size: 14px;
+      color: var(--muted);
     }}
     a.login {{
-      display: inline-block; margin-top: 18px;
-      font-family: system-ui, sans-serif; font-size: 15px;
-      color: #f4f1ea; opacity: .75; text-decoration: underline;
-      text-underline-offset: 4px;
+      font-size: 13px;
+      color: var(--muted);
+      text-decoration: underline;
+      text-underline-offset: 3px;
     }}
-    a.login:hover {{ opacity: 1; }}
+    a.login:hover {{ color: var(--text); }}
+    .panel-right {{
+      min-width: 0;
+      display: flex;
+      align-items: stretch;
+    }}
+    .photo-card {{
+      position: relative;
+      flex: 1;
+      border-radius: var(--card-radius);
+      overflow: hidden;
+      box-shadow:
+        0 18px 48px rgba(0, 0, 0, .38),
+        0 2px 0 rgba(255, 255, 255, .06) inset;
+      background: #0a1520;
+    }}
+    .photo-card img {{
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: cover;
+      opacity: 0;
+      transition: opacity 1.6s ease;
+    }}
+    .photo-card img.on {{ opacity: 1; }}
+    .photo-veil {{
+      position: absolute; inset: 0;
+      background: linear-gradient(
+        to top,
+        rgba(8, 18, 28, .55),
+        transparent 42%,
+        rgba(8, 18, 28, .18)
+      );
+      pointer-events: none;
+    }}
+    .photo-caption {{
+      position: absolute;
+      left: 20px; bottom: 18px;
+      font-size: 13px;
+      letter-spacing: .04em;
+      color: rgba(242, 247, 250, .88);
+      text-shadow: 0 1px 8px rgba(0,0,0,.45);
+    }}
     @keyframes drift {{
       from {{ transform: translate3d(0,0,0) scale(1); }}
-      to {{ transform: translate3d(-4%, 3%, 0) scale(1.08); }}
+      to {{ transform: translate3d(-3%, 2%, 0) scale(1.06); }}
+    }}
+    @media (max-width: 820px) {{
+      .shell {{
+        grid-template-columns: 1fr;
+        grid-template-rows: 1fr 1.1fr;
+      }}
+      .hero-phrase {{ max-width: none; }}
     }}
   </style>
 </head>
 <body>
-  <div class="aurora"></div>
-  {images}
-  <div class="veil"></div>
-  <div class="clock">
-    <p class="time" id="clock-time">--:--</p>
-    <p class="date" id="clock-date"></p>
-  </div>
-  <div class="caption">
-    <h1>TORI</h1>
-    <p>Te estoy escuchando..</p>
-    <a class="login" href="https://www.youtube.com/">Iniciar sesión en YouTube</a>
+  <div class="aurora" aria-hidden="true"></div>
+  <div class="shell">
+    <section class="panel-left">
+      <div class="topbar">
+        <h1 class="brand">TORI</h1>
+        <div class="clock">
+          <p class="time" id="clock-time">--:--</p>
+          <p class="date" id="clock-date"></p>
+        </div>
+      </div>
+      <div class="hero">
+        <p class="hero-lead">Te estoy escuchando</p>
+        <p class="hero-phrase" id="hero-phrase">{hero_phrase}</p>
+        <ul class="suggestions" id="suggestions">
+          {chips}
+        </ul>
+      </div>
+      <div class="foot">
+        <p class="listen">Decí “hola soy …” para activarme</p>
+        <a class="login" href="https://www.youtube.com/">Iniciar sesión en YouTube</a>
+      </div>
+    </section>
+    <section class="panel-right">
+      <div class="photo-card">
+        {images}
+        <div class="photo-veil"></div>
+        <div class="photo-caption">Momentos</div>
+      </div>
+    </section>
   </div>
   <script>
-    const frames = Array.from(document.querySelectorAll("img"));
-    let index = 0;
+    const frames = Array.from(document.querySelectorAll(".photo-card img"));
+    let frameIndex = 0;
     if (frames.length) {{
       setInterval(() => {{
-        frames[index].classList.remove("on");
-        index = (index + 1) % frames.length;
-        frames[index].classList.add("on");
+        frames[frameIndex].classList.remove("on");
+        frameIndex = (frameIndex + 1) % frames.length;
+        frames[frameIndex].classList.add("on");
       }}, 8000);
     }}
+
+    const chips = Array.from(document.querySelectorAll(".chip"));
+    const hero = document.getElementById("hero-phrase");
+    let chipIndex = 0;
+    function setActiveChip(i) {{
+      if (!chips.length || !hero) return;
+      chips.forEach((c) => c.classList.remove("active"));
+      const chip = chips[i];
+      chip.classList.add("active");
+      const phrase = chip.querySelector(".chip-phrase");
+      if (!phrase) return;
+      hero.classList.add("swap");
+      setTimeout(() => {{
+        hero.textContent = phrase.textContent || "";
+        hero.classList.remove("swap");
+      }}, 220);
+    }}
+    if (chips.length > 1) {{
+      setInterval(() => {{
+        chipIndex = (chipIndex + 1) % chips.length;
+        setActiveChip(chipIndex);
+      }}, 7000);
+    }}
+
     const timeEl = document.getElementById("clock-time");
     const dateEl = document.getElementById("clock-date");
     const dateFmt = new Intl.DateTimeFormat("es-AR", {{
-      weekday: "long", day: "numeric", month: "long", year: "numeric"
+      weekday: "long", day: "numeric", month: "long"
     }});
     function tick() {{
       const now = new Date();
@@ -311,7 +570,8 @@ atexit.register(close_video)
 
 def _write_idle_html() -> Path:
     _CHROME_PROFILE.mkdir(parents=True, exist_ok=True)
-    _IDLE_HTML_PATH.write_text(idle_html(), encoding="utf-8")
+    suggestions = _load_action_suggestions()
+    _IDLE_HTML_PATH.write_text(idle_html(suggestions), encoding="utf-8")
     return _IDLE_HTML_PATH
 
 
