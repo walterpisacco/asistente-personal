@@ -76,23 +76,35 @@ Nunca afirmes haber realizado una acción que en realidad no hayas realizado.
 Si una acción depende de un sistema externo, expresá solamente lo necesario para que ese sistema pueda ejecutarla.
 ACCIONES PARA EL BACKEND (opcional)
 Las acciones permitidas están solo en el JSON ACCIONES_DISPONIBLES.
-Si el pedido del usuario coincide con una de esas acciones, respondé primero con el texto hablado para TTS y, en una línea aparte al final, un único JSON:
-{"clave":"...","valor":"..."}
+Si el pedido del usuario coincide con una de esas acciones, respondé primero con el texto hablado para TTS y, en una línea aparte al final, un único JSON.
 
 - clave tiene que ser exactamente una clave de ACCIONES_DISPONIBLES.
 - valor sigue el ejemplo de esa acción. Si el usuario nombra artista, género o tema, poné eso en valor. Si no nombra nada, usá el valor de ejemplo o vacío.
 - No inventes claves que no estén en ACCIONES_DISPONIBLES.
-- El JSON de salida solo tiene clave y valor. No copies description ni otros campos.
+- No copies description ni otros campos de ACCIONES_DISPONIBLES.
 
-Ejemplo de formato, solo si esa clave existe en ACCIONES_DISPONIBLES:
+RECORDATORIOS
+- Para agregar_recordatorio el JSON DEBE incluir mensaje y fecha por separado:
+  {"clave":"agregar_recordatorio","valor":"Ir al dentista","fecha":"2026-10-03 09:00"}
+- valor = solo el mensaje, sin la fecha.
+- fecha = obligatoria. Preferí el lenguaje del usuario si dijo hoy/mañana/pasado mañana (ej. "mañana 16:30"). Si dio fecha absoluta, usá YYYY-MM-DD HH:MM. Si no dio hora, usá 09:00.
+- Si el usuario no indicó día u hora, NO emitas el JSON: preguntá día y hora.
+- No inventes una fecha absoluta. Si dijo "mañana", poné "mañana HH:MM".
+- Para dame_recordatorios: {"clave":"dame_recordatorios","valor":""}
+
+Ejemplos:
 Te pongo algo de Madonna.
 {"clave":"ver_video","valor":"madonna"}
+
+Dale, te lo anoto.
+{"clave":"agregar_recordatorio","valor":"Ir al dentista","fecha":"2026-10-03 09:00"}
 
 Reglas de acción:
 - El JSON es solo para el backend: no lo leas en voz alta ni lo menciones.
 - Si no hace falta ninguna acción, no agregues el JSON.
 - El texto hablado va siempre antes del JSON.
 - Nunca envíes solo el JSON sin una frase breve para TTS, salvo que no haya nada que decir.
+- Nunca digas que anotaste un recordatorio si no emitiste el JSON de agregar_recordatorio.
 
 """
 
@@ -151,6 +163,22 @@ def upsert_actions(db: Session) -> None:
             "valor": "conversacion",
             "metodo": "finalizar_llm",
             "description": "Finalizar la conversación y desconectar el turno con el LLM",
+        },
+        {
+            "clave": "agregar_recordatorio",
+            "valor": "Ir al dentista",
+            "metodo": "agregar_recordatorio",
+            "description": (
+                "Crear recordatorio. JSON obligatorio: "
+                '{"clave":"agregar_recordatorio","valor":"mensaje sin fecha","fecha":"YYYY-MM-DD HH:MM"}. '
+                "fecha obligatoria. Si falta día/hora, preguntar y no emitir JSON."
+            ),
+        },
+        {
+            "clave": "dame_recordatorios",
+            "valor": "",
+            "metodo": "dame_recordatorios",
+            "description": "Listar recordatorios pendientes del usuario",
         },
     ]
     for item in seeds:

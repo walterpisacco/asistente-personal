@@ -31,5 +31,7 @@ class Recordatory(Base):
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    state: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     user: Mapped["User"] = relationship("User", back_populates="recordatories")
+
