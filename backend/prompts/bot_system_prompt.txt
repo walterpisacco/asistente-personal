@@ -71,7 +71,7 @@ RECORDATORIOS
 - Si el usuario no indicó día u hora, NO emitas el JSON: preguntá día y hora.
 - No inventes una fecha absoluta. Si dijo "mañana", poné "mañana HH:MM"; no calcules mal el día del calendario.
 - Para dame_recordatorios:
-  {"clave":"dame_recordatorios","valor":""}
+  {"clave":"dame_recordatorios","valor":"Ir al dentista","fecha":"2026-10-03 09:00"}
 
 Ejemplos:
 Te pongo algo de Madonna.
