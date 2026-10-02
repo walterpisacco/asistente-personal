@@ -22,7 +22,9 @@ import subprocess
 import sys
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
 
 logger = logging.getLogger("tori.video")
 
@@ -146,6 +148,7 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="origin">
   <style>
     :root {{
       --bg0: #0b1c2c;
@@ -324,6 +327,10 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
       transition: opacity 1.6s ease;
     }}
     .photo-card img.on {{ opacity: 1; }}
+    .photo-card.playing img {{
+      opacity: 0 !important;
+      visibility: hidden;
+    }}
     .photo-veil {{
       position: absolute; inset: 0;
       background: linear-gradient(
@@ -333,10 +340,22 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
         rgba(8, 18, 28, .18)
       );
       pointer-events: none;
+      transition: opacity .35s ease;
     }}
+    .photo-card.playing .photo-veil {{ opacity: 0; }}
+    .yt-frame {{
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      border: 0;
+      display: none;
+      z-index: 3;
+      background: #000;
+    }}
+    .photo-card.playing .yt-frame {{ display: block; }}
     .photo-caption {{
       position: absolute;
       left: 20px; bottom: 18px;
+      z-index: 4;
       font-size: 13px;
       letter-spacing: .04em;
       color: rgba(242, 247, 250, .88);
@@ -379,23 +398,73 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
       </div>
     </section>
     <section class="panel-right">
-      <div class="photo-card">
+      <div class="photo-card" id="photo-card">
         {images}
+        <iframe class="yt-frame" id="yt-frame" title="YouTube"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          allowfullscreen referrerpolicy="origin"></iframe>
         <div class="photo-veil"></div>
-        <div class="photo-caption">Momentos</div>
+        <div class="photo-caption" id="photo-caption">Momentos</div>
       </div>
     </section>
   </div>
   <script>
+    const card = document.getElementById("photo-card");
+    const yt = document.getElementById("yt-frame");
+    const caption = document.getElementById("photo-caption");
     const frames = Array.from(document.querySelectorAll(".photo-card img"));
     let frameIndex = 0;
-    if (frames.length) {{
-      setInterval(() => {{
+    let carouselTimer = null;
+
+    function startCarousel() {{
+      if (carouselTimer || !frames.length) return;
+      carouselTimer = setInterval(() => {{
+        if (card.classList.contains("playing")) return;
         frames[frameIndex].classList.remove("on");
         frameIndex = (frameIndex + 1) % frames.length;
         frames[frameIndex].classList.add("on");
       }}, 8000);
     }}
+    function stopCarousel() {{
+      if (!carouselTimer) return;
+      clearInterval(carouselTimer);
+      carouselTimer = null;
+    }}
+    startCarousel();
+
+    window.toriPlay = function(id, title) {{
+      id = String(id || "").trim();
+      if (!/^[A-Za-z0-9_-]{{6,32}}$/.test(id)) return;
+      stopCarousel();
+      card.classList.add("playing");
+      caption.textContent = title || "YouTube";
+      const origin = encodeURIComponent(window.location.origin);
+      yt.src = "https://www.youtube.com/embed/" + encodeURIComponent(id)
+        + "?autoplay=1&rel=0&modestbranding=1&playsinline=1&enablejsapi=1&origin="
+        + origin;
+    }};
+    window.toriIdle = function() {{
+      card.classList.remove("playing");
+      caption.textContent = "Momentos";
+      yt.removeAttribute("src");
+      startCarousel();
+    }};
+
+    // El proceso Python publica el estado; la página no navega a YouTube.
+    let lastSeq = -1;
+    async function pollState() {{
+      try {{
+        const res = await fetch("/api/state", {{ cache: "no-store" }});
+        if (!res.ok) return;
+        const s = await res.json();
+        if (typeof s.seq !== "number" || s.seq === lastSeq) return;
+        lastSeq = s.seq;
+        if (s.mode === "play") window.toriPlay(s.id || "", s.title || "");
+        else window.toriIdle();
+      }} catch (e) {{ /* file:// o sin servidor */ }}
+    }}
+    setInterval(pollState, 400);
+    pollState();
 
     const chips = Array.from(document.querySelectorAll(".chip"));
     const hero = document.getElementById("hero-phrase");
@@ -442,6 +511,13 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
 
 def watch_url(video_id: str) -> str:
     return f"https://www.youtube.com/watch?v={video_id}&autoplay=1"
+
+
+def embed_url(video_id: str) -> str:
+    return (
+        f"https://www.youtube.com/embed/{video_id}"
+        "?autoplay=1&rel=0&modestbranding=1&playsinline=1"
+    )
 
 
 def _has_display() -> bool:
@@ -575,6 +651,96 @@ def _write_idle_html() -> Path:
     return _IDLE_HTML_PATH
 
 
+class _IdleControlServer:
+    """Sirve la idle en localhost y publica play/idle sin navegar fuera."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._html = ""
+        self._state: dict[str, object] = {
+            "mode": "idle",
+            "id": "",
+            "title": "",
+            "seq": 0,
+        }
+        self._httpd: ThreadingHTTPServer | None = None
+        self.port = 0
+
+    def set_html(self, content: str) -> None:
+        with self._lock:
+            self._html = content
+
+    def play(self, video_id: str, title: str = "") -> None:
+        with self._lock:
+            seq = int(self._state.get("seq") or 0) + 1
+            self._state = {
+                "mode": "play",
+                "id": video_id,
+                "title": title or "YouTube",
+                "seq": seq,
+            }
+
+    def idle(self) -> None:
+        with self._lock:
+            seq = int(self._state.get("seq") or 0) + 1
+            self._state = {"mode": "idle", "id": "", "title": "", "seq": seq}
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            return dict(self._state)
+
+    def html(self) -> str:
+        with self._lock:
+            return self._html
+
+    def start(self, host: str = "127.0.0.1", port: int = 0) -> int:
+        server = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, fmt: str, *args) -> None:  # noqa: A003
+                return
+
+            def do_GET(self) -> None:  # noqa: N802
+                path = urlparse(self.path).path
+                if path in ("/", "/index.html", "/tori-idle.html"):
+                    body = server.html().encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if path == "/api/state":
+                    payload = json.dumps(
+                        server.snapshot(), ensure_ascii=False
+                    ).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+                self.send_error(404)
+
+        self._httpd = ThreadingHTTPServer((host, port), Handler)
+        self.port = int(self._httpd.server_address[1])
+        thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+        thread.start()
+        logger.info("Idle UI server http://%s:%s/", host, self.port)
+        return self.port
+
+    def stop(self) -> None:
+        if self._httpd is None:
+            return
+        try:
+            self._httpd.shutdown()
+        except Exception:
+            pass
+        self._httpd = None
+
+
 def _stop_proc(proc: subprocess.Popen | None) -> None:
     if proc is None or proc.poll() is not None:
         return
@@ -586,12 +752,54 @@ def _stop_proc(proc: subprocess.Popen | None) -> None:
         proc.wait(timeout=2)
 
 
+def _ui_settings() -> tuple[str, int, str]:
+    """host, port, video_mode (embed|watch)."""
+    try:
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        host = (settings.bot_ui_host or "tori.local").strip() or "tori.local"
+        port = int(settings.bot_ui_port or 8765)
+        mode = (settings.bot_ui_video_mode or "embed").strip().lower()
+        if mode not in ("embed", "watch"):
+            mode = "embed"
+        return host, port, mode
+    except Exception as exc:
+        logger.warning("UI settings fallback: %s", exc)
+        return "tori.local", 8765, "embed"
+
+
 def _run_window_chrome(chrome: str) -> None:
-    """Ventana TORI con Chrome real (login de Google permitido)."""
+    """Ventana TORI con Chrome: idle en dominio local + video embebido o watch.
+
+    Con BOT_UI_HOST=tori.local (en /etc/hosts → 127.0.0.1) el embed suele
+    funcionar y el play no reemplaza la pantalla. BOT_UI_VIDEO_MODE=watch
+    vuelve al modo pantalla completa de YouTube.
+    """
     chrome_proc: subprocess.Popen | None = None
+    ui_host, ui_port, video_mode = _ui_settings()
+    control = _IdleControlServer()
+    path = _write_idle_html()
+    control.set_html(path.read_text(encoding="utf-8"))
+    # Escucha en todas las interfaces locales; Chrome abre por el hostname.
+    bound = control.start(host="127.0.0.1", port=ui_port)
+    app_url = f"http://{ui_host}:{bound}/"
+    current_url = {"url": ""}
+    if ui_host not in ("127.0.0.1", "localhost") and video_mode == "embed":
+        logger.info(
+            "UI idle en %s — asegurate de tener en /etc/hosts: 127.0.0.1 %s",
+            app_url,
+            ui_host,
+        )
 
     def open_url(url: str) -> None:
         nonlocal chrome_proc
+        if (
+            chrome_proc is not None
+            and chrome_proc.poll() is None
+            and current_url["url"] == url
+        ):
+            return
         _stop_proc(chrome_proc)
         # Misma carpeta de perfil → la sesión de YouTube se conserva.
         chrome_proc = subprocess.Popen(
@@ -608,16 +816,33 @@ def _run_window_chrome(chrome: str) -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        logger.info("Chrome TORI url=%s pid=%s", url[:80], chrome_proc.pid)
+        current_url["url"] = url
+        logger.info("Chrome TORI url=%s pid=%s", url[:96], chrome_proc.pid)
+
+    def ensure_idle_chrome() -> None:
+        if chrome_proc is not None and chrome_proc.poll() is None:
+            if current_url["url"] == app_url:
+                return
+        open_url(app_url)
 
     def show_gallery() -> None:
-        path = _write_idle_html()
-        open_url(path.resolve().as_uri())
+        control.idle()
+        if video_mode == "watch":
+            open_url(app_url)
+        else:
+            ensure_idle_chrome()
 
     def show_video(video_id: str, title: str) -> None:
         if not _VIDEO_ID_RE.fullmatch(video_id or ""):
             return
-        open_url(watch_url(video_id))
+        if video_mode == "watch":
+            control.play(video_id, title or "YouTube")
+            open_url(watch_url(video_id))
+            logger.info("Video watch id=%s title=%r", video_id, title)
+            return
+        ensure_idle_chrome()
+        control.play(video_id, title or "YouTube")
+        logger.info("Video embed id=%s title=%r host=%s", video_id, title, ui_host)
 
     show_gallery()
     try:
@@ -635,6 +860,7 @@ def _run_window_chrome(chrome: str) -> None:
             elif cmd == "idle":
                 show_gallery()
     finally:
+        control.stop()
         _stop_proc(chrome_proc)
 
 

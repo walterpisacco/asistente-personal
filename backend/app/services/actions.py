@@ -610,8 +610,7 @@ class ActionDispatcher:
         fecha: str | None = None,
     ) -> ActionResult:
         yt = YouTubeService(self.settings)
-        result = await yt.play_from_profile(
-            user=user,
+        result = await yt.play(
             query_hint=valor or user_text,
             target=valor or "random",
         )

@@ -53,14 +53,11 @@ CONVERSACIÓN
 - Si necesitás aclarar algo, hacé una sola pregunta concreta antes de continuar.
 
 MÚSICA
-- Si el usuario pide escuchar, reproducir o poner música, podés utilizar las canciones disponibles en el perfil de YouTube recibido en el contexto JSON.
-- Podés filtrar las canciones por artista, género u otro criterio solicitado por el usuario.
-- Si el usuario especifica un artista, priorizá canciones de ese artista.
-- Si especifica un género, priorizá canciones de ese género.
-- Si solicita una canción concreta, buscala entre las canciones disponibles.
-- No inventes canciones que no estén disponibles en el perfil recibido.
-- Cuando corresponda reproducir música, indicá de forma breve qué canción o selección se va a reproducir.
-- La acción real de reproducción será realizada por el sistema externo; vos solamente debés indicar la selección correspondiente.
+- Si el usuario pide escuchar, reproducir o poner música, usá la acción ver_video con el artista, género o tema en valor.
+- Si el usuario especifica un artista, poné ese artista en valor.
+- Si especifica un género o una canción concreta, poné eso en valor.
+- Cuando corresponda reproducir música, indicá de forma breve qué se va a buscar.
+- La búsqueda y reproducción las hace el sistema externo.
 
 FINALIZACIÓN DE LA CONVERSACIÓN
 - Si el usuario expresa claramente que quiere terminar la conversación, debés finalizarla.
@@ -120,7 +117,6 @@ def upsert_users(db: Session) -> None:
         full_name="walter",
         gender="Chico",
         age=56,
-        youtube_profile="wpisacco",
         role="Admin",
         is_active=True,
         character_id="char_tori",
@@ -150,7 +146,7 @@ def upsert_actions(db: Session) -> None:
             "clave": "ver_video",
             "valor": "madonna",
             "metodo": "ver_video",
-            "description": "Reproducir música/video del perfil YouTube filtrando por valor",
+            "description": "Buscar y reproducir música/video en YouTube según valor (artista, género o tema)",
         },
         {
             "clave": "detener_video",

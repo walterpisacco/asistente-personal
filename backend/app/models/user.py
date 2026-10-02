@@ -16,7 +16,6 @@ class User(Base):
     full_name: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
     gender: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
     age: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    youtube_profile: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="operator")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     character_id: Mapped[str] = mapped_column(

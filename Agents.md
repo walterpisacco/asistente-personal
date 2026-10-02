@@ -19,21 +19,21 @@ La conversación se desactiva luego de un silencio prolongado configurado en BOT
 - Preferir frases cortas por turno; 
 
 ## Identificación de usuario
-Cuando se activa la conversación con «hola soy {username}», el backend busca ese username en `users` y devuelve el id, full_name, gender, age, youtube_profile. No usa el embedding de voz para identificar.
+Cuando se activa la conversación con «hola soy {username}», el backend busca ese username en `users` y devuelve el id, full_name, gender, age. No usa el embedding de voz para identificar.
 
-Cuando se activa la conversación con la identificación de rostro, el backend busca el embeddings del rostro en la base de datos y devuelve el id, full_name, gender, age, youtube_profile.
+Cuando se activa la conversación con la identificación de rostro, el backend busca el embeddings del rostro en la base de datos y devuelve el id, full_name, gender, age.
 
 
 El bot No debe crear usuarios.
 
 ## Inyección de contexto de usuario
 El backend inyecta el JSON (CRM) al inicio de la conversación:
-Claves relevantes: `id`, `full_name`, `gender`, `age`, `youtube_profile`.
+Claves relevantes: `id`, `full_name`, `gender`, `age`.
 
 No hardcodear datos de los usuarios en el system prompt ni en este archivo.
 
 ## Convenciones de producto
 - Flujo: «hola soy {username}» → usuario de esa frase → Conversación → Finalización
 - Temas: hablar de cualquier tema.
-- el Bot puede reproducir canciones aleatorias del perfil de youtube filtrando por artista o genero musical.
+- El bot puede buscar y reproducir videos de YouTube por artista, género o tema (búsqueda general, sin canal de usuario).
 - `Agents.md` es contexto para desarrollo en Cursor; no lo lee el LLM

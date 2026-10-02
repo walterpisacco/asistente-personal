@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     # Tras TTS: pausa antes de reabrir mic + settle para descartar eco (etiquetas-ia).
     bot_post_tts_delay_ms: int = 500
     bot_mic_settle_ms: int = 450
+    # UI idle: host local (poner en /etc/hosts → 127.0.0.1). Evita bloqueo de embed en 127.0.0.1.
+    bot_ui_host: str = "tori.local"
+    bot_ui_port: int = 8765
+    # embed = video en el panel derecho; watch = pantalla completa YouTube
+    bot_ui_video_mode: str = "embed"
 
     voice_id_threshold: float = 0.75
 

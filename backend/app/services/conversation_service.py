@@ -39,7 +39,6 @@ def build_user_crm(user: User) -> dict[str, Any]:
         "full_name": user.full_name,
         "gender": user.gender,
         "age": user.age,
-        "youtube_profile": user.youtube_profile,
     }
 
 

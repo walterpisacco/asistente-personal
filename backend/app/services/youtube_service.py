@@ -1,4 +1,4 @@
-"""Búsqueda en el perfil de YouTube y reproducción en una ventana PyQt6."""
+"""Búsqueda general en YouTube y reproducción en la ventana TORI."""
 
 from __future__ import annotations
 
@@ -6,19 +6,15 @@ import asyncio
 import logging
 import random
 import re
-from typing import Any, Optional
-from urllib.parse import quote_plus
+from typing import Any
 
 from app.bot.video_player import open_video, return_to_idle
 from app.core.config import Settings
-from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
 
 class _YtdlpQuiet:
-    """Evita que yt-dlp imprima el 404 del canal cuando hay búsqueda de respaldo."""
-
     def debug(self, msg: str) -> None:
         return
 
@@ -62,26 +58,18 @@ class YouTubeService:
         genre = next((g for g in _GENRE_HINTS if g in text), None)
         return artist, genre
 
-    async def play_from_profile(
+    async def play(
         self,
         *,
-        user: Optional[User],
         query_hint: str = "",
         target: str = "random",
     ) -> dict[str, Any]:
-        profile = (user.youtube_profile if user else None) or ""
-        if not profile:
-            return {
-                "ok": False,
-                "spoken": "No tengo un perfil de YouTube asociado a tu cuenta.",
-            }
-
         artist, genre = self._extract_filters(query_hint)
         term = (target or "").strip()
         if not term or term.lower() == "random":
             term = " ".join(bit for bit in (artist, genre) if bit)
-        term = self._search_term(profile, term)
-        queries = self._search_queries(profile, term)
+        term = self._search_term(term)
+        queries = self._search_queries(term)
 
         try:
             info = await asyncio.to_thread(self._resolve_video, queries)
@@ -122,9 +110,7 @@ class YouTubeService:
             "spoken": f"Reproduzco {title}{suffix}.",
         }
 
-    def _search_term(self, profile: str, term: str) -> str:
-        """El perfil no es un tema. «cualquier artista» tampoco."""
-        handle = (profile or "").strip().lstrip("@").lower()
+    def _search_term(self, term: str) -> str:
         cleaned = (term or "").strip()
         generic = {
             "",
@@ -137,32 +123,17 @@ class YouTubeService:
             "lo que sea",
             "musica",
             "música",
-            handle,
         }
         if cleaned.lower() in generic:
             return ""
         return cleaned
 
-    def _search_queries(self, profile: str, term: str) -> list[str]:
-        """Canal del perfil primero; si no hay resultados, el tema y al final música."""
-        handle = (profile or "").strip().lstrip("@")
+    def _search_queries(self, term: str) -> list[str]:
+        """Solo búsqueda general de YouTube (sin canal)."""
         term = (term or "").strip()
-        queries: list[str] = []
-        if handle and " " not in handle:
-            if term:
-                queries.append(
-                    f"https://www.youtube.com/@{quote_plus(handle)}/search?query={quote_plus(term)}"
-                )
-            else:
-                queries.append(f"https://www.youtube.com/@{quote_plus(handle)}/videos")
         if term:
-            queries.append("ytsearch5:" + term)
-        queries.append("ytsearch5:música")
-        seen: list[str] = []
-        for query in queries:
-            if query not in seen:
-                seen.append(query)
-        return seen
+            return ["ytsearch5:" + term]
+        return ["ytsearch5:música"]
 
     def _resolve_video(self, queries: list[str]) -> dict[str, Any]:
         import yt_dlp
