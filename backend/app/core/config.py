@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     bot_ui_port: int = 8765
     # embed = video en el panel derecho; watch = pantalla completa YouTube
     bot_ui_video_mode: str = "embed"
+    # Tamaño ventana Chrome (--app). 0 = maximizada.
+    bot_ui_width: int = 1280
+    bot_ui_height: int = 800
 
     voice_id_threshold: float = 0.75
 

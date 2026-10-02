@@ -170,10 +170,10 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
     }}
     .shell {{
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: clamp(16px, 2.2vw, 28px);
+      grid-template-columns: 1fr 3fr;
+      gap: clamp(14px, 1.8vw, 22px);
       height: 100%;
-      padding: clamp(18px, 2.4vw, 32px);
+      padding: clamp(16px, 2vw, 28px);
       position: relative;
       z-index: 1;
     }}
@@ -202,9 +202,9 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
     }}
     .brand {{
       margin: 0;
-      font-size: clamp(42px, 7vw, 72px);
+      font-size: clamp(32px, 4.2vw, 52px);
       font-weight: 650;
-      letter-spacing: .14em;
+      letter-spacing: .12em;
       line-height: 1;
     }}
     .clock {{
@@ -213,7 +213,7 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
     }}
     .clock .time {{
       margin: 0;
-      font-size: clamp(28px, 4.2vw, 44px);
+      font-size: clamp(22px, 2.8vw, 34px);
       font-weight: 500;
       letter-spacing: .04em;
       font-variant-numeric: tabular-nums;
@@ -221,10 +221,10 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
     }}
     .clock .date {{
       margin: 8px 0 0;
-      font-size: clamp(12px, 1.4vw, 15px);
+      font-size: clamp(11px, 1.2vw, 13px);
       color: var(--muted);
       text-transform: capitalize;
-      max-width: 18ch;
+      max-width: 14ch;
     }}
     .hero {{
       flex: 1;
@@ -241,10 +241,10 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
     }}
     .hero-phrase {{
       margin: 0;
-      font-size: clamp(26px, 3.4vw, 40px);
+      font-size: clamp(20px, 2.4vw, 30px);
       font-weight: 560;
       line-height: 1.25;
-      max-width: 18ch;
+      max-width: 16ch;
       transition: opacity .45s ease, transform .45s ease;
     }}
     .hero-phrase.swap {{
@@ -752,8 +752,8 @@ def _stop_proc(proc: subprocess.Popen | None) -> None:
         proc.wait(timeout=2)
 
 
-def _ui_settings() -> tuple[str, int, str]:
-    """host, port, video_mode (embed|watch)."""
+def _ui_settings() -> tuple[str, int, str, int, int]:
+    """host, port, video_mode, width, height (0,0 = maximizada)."""
     try:
         from app.core.config import get_settings
 
@@ -763,10 +763,12 @@ def _ui_settings() -> tuple[str, int, str]:
         mode = (settings.bot_ui_video_mode or "embed").strip().lower()
         if mode not in ("embed", "watch"):
             mode = "embed"
-        return host, port, mode
+        width = max(0, int(settings.bot_ui_width or 0))
+        height = max(0, int(settings.bot_ui_height or 0))
+        return host, port, mode, width, height
     except Exception as exc:
         logger.warning("UI settings fallback: %s", exc)
-        return "tori.local", 8765, "embed"
+        return "tori.local", 8765, "embed", 1280, 800
 
 
 def _run_window_chrome(chrome: str) -> None:
@@ -777,11 +779,11 @@ def _run_window_chrome(chrome: str) -> None:
     vuelve al modo pantalla completa de YouTube.
     """
     chrome_proc: subprocess.Popen | None = None
-    ui_host, ui_port, video_mode = _ui_settings()
+    ui_host, ui_port, video_mode, ui_width, ui_height = _ui_settings()
     control = _IdleControlServer()
     path = _write_idle_html()
     control.set_html(path.read_text(encoding="utf-8"))
-    # Escucha en todas las interfaces locales; Chrome abre por el hostname.
+    # Escucha en loopback; Chrome abre por el hostname (tori.local).
     bound = control.start(host="127.0.0.1", port=ui_port)
     app_url = f"http://{ui_host}:{bound}/"
     current_url = {"url": ""}
@@ -802,22 +804,33 @@ def _run_window_chrome(chrome: str) -> None:
             return
         _stop_proc(chrome_proc)
         # Misma carpeta de perfil → la sesión de YouTube se conserva.
+        args = [
+            chrome,
+            f"--user-data-dir={_CHROME_PROFILE}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-features=TranslateUI",
+            "--autoplay-policy=no-user-gesture-required",
+        ]
+        if ui_width > 0 and ui_height > 0:
+            args.append(f"--window-size={ui_width},{ui_height}")
+            args.append("--window-position=80,60")
+        else:
+            args.append("--start-maximized")
+        args.append(f"--app={url}")
         chrome_proc = subprocess.Popen(
-            [
-                chrome,
-                f"--user-data-dir={_CHROME_PROFILE}",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-features=TranslateUI",
-                "--autoplay-policy=no-user-gesture-required",
-                "--start-maximized",
-                f"--app={url}",
-            ],
+            args,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         current_url["url"] = url
-        logger.info("Chrome TORI url=%s pid=%s", url[:96], chrome_proc.pid)
+        logger.info(
+            "Chrome TORI url=%s size=%sx%s pid=%s",
+            url[:96],
+            ui_width or "max",
+            ui_height or "max",
+            chrome_proc.pid,
+        )
 
     def ensure_idle_chrome() -> None:
         if chrome_proc is not None and chrome_proc.poll() is None:
@@ -925,7 +938,11 @@ def _run_window_qt() -> None:
 
     window = QMainWindow()
     window.setWindowTitle("TORI")
-    window.resize(1100, 640)
+    _, _, _, ui_width, ui_height = _ui_settings()
+    if ui_width > 0 and ui_height > 0:
+        window.resize(ui_width, ui_height)
+    else:
+        window.resize(1280, 800)
     view = QWebEngineView(window)
     _configure_view(view)
     window.setCentralWidget(view)
@@ -968,7 +985,10 @@ def _run_window_qt() -> None:
 
     threading.Thread(target=read_commands, daemon=True).start()
     show_gallery()
-    window.showMaximized()
+    if ui_width > 0 and ui_height > 0:
+        window.show()
+    else:
+        window.showMaximized()
     raise SystemExit(app.exec())
 
 
