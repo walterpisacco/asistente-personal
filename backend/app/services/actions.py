@@ -138,6 +138,41 @@ def _apply_default_time(dt: datetime) -> datetime:
 
 _EXPLICIT_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
 
+# Turnos que confirman/preguntan por un recordatorio ya hecho (no crear de nuevo).
+_REMINDER_CONFIRM_RE = re.compile(
+    r"(?i)\b("
+    r"lo\s+(anotaste|hiciste|guardaste|creaste|agregaste|apuntaste)"
+    r"|ya\s+lo\s+(anotaste|hiciste|guardaste|ten[eé]s|tenias|tenías)"
+    r"|est[aá]\s+(anotado|guardado|listo)"
+    r"|me\s+lo\s+(anotaste|recordaste|guardaste)"
+    r"|lo\s+ten[eé]s\s+anotado"
+    r"|ya\s+est[aá]"
+    r")\b"
+)
+# Intención clara de crear un recordatorio nuevo en este turno.
+_REMINDER_CREATE_RE = re.compile(
+    r"(?i)\b("
+    r"record[aá]me|acordate"
+    r"|anot[aá](me|lo|la)?"
+    r"|agreg[aá](me|lo|la)?"
+    r"|pon[eé](me)?"
+    r"|apunt[aá](me|lo|la)?"
+    r"|quiero\s+(un\s+)?recordatorio"
+    r"|nuevo\s+recordatorio"
+    r"|cre[aá]\s+(un\s+)?recordatorio"
+    r")\b"
+)
+
+
+def should_skip_reminder_create(user_text: str) -> bool:
+    """True si el usuario solo pregunta/confirma, no pide anotar uno nuevo."""
+    text = (user_text or "").strip()
+    if not text:
+        return False
+    if _REMINDER_CREATE_RE.search(text):
+        return False
+    return _REMINDER_CONFIRM_RE.search(text) is not None
+
 
 def ensure_future_datetime(
     dt: datetime | None,
@@ -642,6 +677,20 @@ class ActionDispatcher:
                 extra={"error": "no_user"},
             )
 
+        # El LLM a veces reemite el JSON cuando preguntan "¿lo anotaste?".
+        if should_skip_reminder_create(user_text):
+            logger.info(
+                "Recordatorio: skip create (confirmación) user_text=%r",
+                user_text[:120],
+            )
+            return ActionResult(
+                action=row_clave,
+                metodo="agregar_recordatorio",
+                valor=valor,
+                spoken_override="Sí, ya lo tengo anotado.",
+                extra={"skipped": "confirmation_turn"},
+            )
+
         message, scheduled_at = resolve_recordatory_schedule(
             valor=valor,
             fecha=fecha,
@@ -678,7 +727,38 @@ class ActionDispatcher:
                 },
             )
 
-        row = RecordatoryRepository(self.db).create(
+        repo = RecordatoryRepository(self.db)
+        existing = repo.find_active_duplicate(
+            user_id=int(user.id),
+            message=message,
+            scheduled_at=scheduled_at,
+        )
+        if existing is not None:
+            logger.info(
+                "Recordatorio duplicado id=%s user=%s scheduled_at=%s message=%r",
+                existing.id,
+                user.id,
+                scheduled_at,
+                message[:80],
+            )
+            spoken = (
+                f"Sí, ya lo tenía anotado para el "
+                f"{scheduled_at.strftime('%d/%m a las %H:%M')}."
+            )
+            return ActionResult(
+                action=row_clave,
+                metodo="agregar_recordatorio",
+                valor=message,
+                spoken_override=spoken,
+                extra={
+                    "id": existing.id,
+                    "message": existing.message,
+                    "scheduled_at": scheduled_at.isoformat(sep=" "),
+                    "deduped": True,
+                },
+            )
+
+        row = repo.create(
             user_id=int(user.id),
             message=message,
             scheduled_at=scheduled_at,
@@ -793,7 +873,12 @@ async def run_llm_action(
         "dame_recordatorios",
         "agregar_recordatorio",
     ):
-        # Preferir el spoken del sistema si el LLM no dijo nada útil.
-        if len(spoken) < 8 or result.metodo == "dame_recordatorios":
+        extra = result.extra or {}
+        force_override = bool(
+            extra.get("skipped")
+            or extra.get("deduped")
+            or result.metodo == "dame_recordatorios"
+        )
+        if force_override or len(spoken) < 8:
             spoken = result.spoken_override
     return spoken, result
