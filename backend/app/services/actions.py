@@ -170,6 +170,22 @@ def ensure_future_datetime(
         return dt
 
     candidate = dt
+    # Hora de hoy/ayer ya pasada → sumar días (no años). Evita 15:00 → 2027.
+    if (now - candidate) <= timedelta(days=2):
+        for _ in range(3):
+            if candidate >= now - timedelta(minutes=1):
+                if candidate != dt:
+                    logger.info(
+                        "Ajustando hora pasada %s → %s (user_text=%r fecha_llm=%r)",
+                        dt,
+                        candidate,
+                        user_text,
+                        fecha,
+                    )
+                return candidate
+            candidate = candidate + timedelta(days=1)
+
+    candidate = dt
     for _ in range(6):
         if candidate >= now - timedelta(minutes=1):
             if candidate != dt:
@@ -201,14 +217,15 @@ def _dateparser_settings() -> dict[str, Any]:
 # hoy / mañana / pasado mañana (+ hora opcional). Evita que el LLM invente ISO incorrectos.
 _RELATIVE_DAY_RE = re.compile(
     r"(?P<rel>\bpasado\s+ma[nñ]ana\b|\bma[nñ]ana\b|\bhoy\b)"
-    r"(?:\s*(?:a\s+las?\s*)?(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ampm>am|pm|hs|hrs?)?)?",
+    r"(?:\s*(?:a\s+las?\s*)?(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ampm>am|pm)?)?",
     re.IGNORECASE,
 )
-# Hora explícita: "a las 16", "16:30", "4pm". No captura el "12" de "12 de noviembre".
+# Hora de reloj en ES. "15 horas" NO es duración; "12 de noviembre" no matchea.
 _TIME_ONLY_RE = re.compile(
-    r"(?:a\s+las?\s+)(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ampm>am|pm|hs|hrs?)?"
-    r"|(?<!\d)(?P<h2>\d{1,2}):(?P<m2>\d{2})\s*(?P<ampm2>am|pm|hs|hrs?)?"
-    r"|(?<!\d)(?P<h3>\d{1,2})\s*(?P<ampm3>am|pm)\b",
+    r"(?:a\s+)?(?:las?\s+)(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ampm>am|pm)?"
+    r"|(?<!\d)(?P<h2>\d{1,2})(?::(?P<m2>\d{2}))?\s*(?:horas?|hs|hrs?)\b"
+    r"|(?<!\d)(?P<h3>\d{1,2}):(?P<m3>\d{2})\s*(?P<ampm3>am|pm)?"
+    r"|(?<!\d)(?P<h4>\d{1,2})\s*(?P<ampm4>am|pm)\b",
     re.IGNORECASE,
 )
 
@@ -229,15 +246,12 @@ def _parse_clock(hour_s: str | None, minute_s: str | None, ampm: str | None) -> 
 
 
 def _extract_clock_from_text(text: str) -> tuple[int, int] | None:
-    """Primera hora explícita en el texto (a las / HH:MM / am|pm)."""
+    """Primera hora de reloj en el texto (a las 15 / 15 horas / 15:00 / 3pm)."""
     for tm in _TIME_ONLY_RE.finditer(text or ""):
-        h = tm.groupdict().get("h") or tm.groupdict().get("h2") or tm.groupdict().get("h3")
-        m = tm.groupdict().get("m") or tm.groupdict().get("m2")
-        ampm = (
-            tm.groupdict().get("ampm")
-            or tm.groupdict().get("ampm2")
-            or tm.groupdict().get("ampm3")
-        )
+        g = tm.groupdict()
+        h = g.get("h") or g.get("h2") or g.get("h3") or g.get("h4")
+        m = g.get("m") or g.get("m2") or g.get("m3")
+        ampm = g.get("ampm") or g.get("ampm3") or g.get("ampm4")
         clock = _parse_clock(h, m, ampm)
         if clock:
             return clock
@@ -251,6 +265,32 @@ def apply_time_from_text(dt: datetime, text: str) -> datetime:
         return dt
     hour, minute = clock
     return dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def _datetime_from_clock_only(text: str) -> datetime | None:
+    """Si el texto es solo una hora (p.ej. '15 horas'), usa hoy/mañana a esa hora.
+
+    Evita que dateparser trate «15 horas» como duración (±15h → ~03:00).
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+    clock = _extract_clock_from_text(text)
+    if clock is None:
+        return None
+    if re.search(
+        r"\b(\d{1,2}\s+de\s+\w+|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}"
+        r"|hoy|ma[nñ]ana|pasado\s+ma[nñ]ana)\b",
+        text,
+        re.I,
+    ):
+        return None
+    hour, minute = clock
+    now = _now_local()
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate < now - timedelta(minutes=1):
+        candidate = candidate + timedelta(days=1)
+    return candidate
 
 
 def parse_relative_spanish(text: str) -> datetime | None:
@@ -290,6 +330,10 @@ def parse_scheduled_at(raw: str | None) -> datetime | None:
     if relative is not None:
         return relative
 
+    clock_only = _datetime_from_clock_only(text)
+    if clock_only is not None:
+        return clock_only
+
     if text.endswith("Z"):
         text = text[:-1]
 
@@ -313,7 +357,9 @@ def parse_scheduled_at(raw: str | None) -> datetime | None:
     if parsed is None:
         logger.warning("No pude parsear fecha de recordatorio: %r", raw)
         return None
-    return _apply_default_time(_naive_local(parsed))
+    parsed_naive = _apply_default_time(_naive_local(parsed))
+    # dateparser a veces interpreta «15 horas» como duración; pisar con hora de reloj
+    return apply_time_from_text(parsed_naive, raw or "")
 
 
 def extract_datetime_from_text(text: str) -> tuple[datetime | None, str | None]:
@@ -327,6 +373,11 @@ def extract_datetime_from_text(text: str) -> tuple[datetime | None, str | None]:
         match = _RELATIVE_DAY_RE.search(text)
         return relative, match.group(0) if match else None
 
+    clock_only = _datetime_from_clock_only(text)
+    if clock_only is not None:
+        tm = _TIME_ONLY_RE.search(text)
+        return clock_only, tm.group(0) if tm else None
+
     try:
         from dateparser.search import search_dates
     except ImportError:
@@ -334,9 +385,20 @@ def extract_datetime_from_text(text: str) -> tuple[datetime | None, str | None]:
 
     hits = search_dates(text, languages=["es"], settings=_dateparser_settings())
     if not hits:
-        return None, None
+        clock = _extract_clock_from_text(text)
+        if clock is None:
+            return None, None
+        hour, minute = clock
+        now = _now_local()
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate < now - timedelta(minutes=1):
+            candidate = candidate + timedelta(days=1)
+        tm = _TIME_ONLY_RE.search(text)
+        return candidate, tm.group(0) if tm else None
     fragment, dt = hits[-1]
-    return _apply_default_time(_naive_local(dt)), fragment
+    parsed = _apply_default_time(_naive_local(dt))
+    parsed = apply_time_from_text(parsed, text)
+    return parsed, fragment
 
 
 def _strip_date_fragment(message: str, fragment: str | None) -> str:
@@ -383,10 +445,15 @@ def resolve_recordatory_schedule(
     if not message:
         message = (user_text or "").strip()
 
+    combined = " ".join(p for p in (user_text, fecha or "", message) if p)
+
     # 1) Relativos del pedido del usuario (fuente de verdad frente al ISO del LLM).
-    combined_relative = " ".join(p for p in (user_text, fecha or "", message) if p)
-    relative = parse_relative_spanish(combined_relative)
+    relative = parse_relative_spanish(combined)
     if relative is not None:
+        relative = apply_time_from_text(relative, combined)
+        relative = ensure_future_datetime(
+            relative, user_text=user_text, fecha=fecha or ""
+        )
         logger.info(
             "Recordatorio: usando fecha relativa %s (user_text=%r fecha_llm=%r)",
             relative,
@@ -409,14 +476,20 @@ def resolve_recordatory_schedule(
         if scheduled_at is not None and message == (user_text or "").strip():
             message = _strip_date_fragment(user_text, fragment)
 
-    # 4) Corregir año inventado (2023-11-12 → 2026-11-12) conservando hora del LLM
+    # 4) Hora de reloj del usuario pisa duración/ISO mal parseados ("15 horas" ≠ 03:00)
+    if scheduled_at is not None:
+        scheduled_at = apply_time_from_text(scheduled_at, combined)
+
+    # 5) Corregir año inventado / hora de hoy ya pasada
     scheduled_at = ensure_future_datetime(
         scheduled_at, user_text=user_text, fecha=fecha or ""
     )
 
-    # 5) Si sigue en el pasado / vacía, reintentar con texto del usuario
+    # 6) Si sigue en el pasado / vacía, reintentar con texto del usuario
     if scheduled_at is None or scheduled_at < _now_local() - timedelta(minutes=1):
         retry, fragment = extract_datetime_from_text(user_text or message)
+        if retry is not None:
+            retry = apply_time_from_text(retry, combined)
         retry = ensure_future_datetime(
             retry, user_text=user_text, fecha=fecha or ""
         )
@@ -427,11 +500,6 @@ def resolve_recordatory_schedule(
                 retry,
             )
             scheduled_at = retry
-
-    # 6) Hora explícita del usuario pisa la del LLM/dateparser ("a las 16")
-    if scheduled_at is not None:
-        combined = " ".join(p for p in (user_text, fecha or "", message) if p)
-        scheduled_at = apply_time_from_text(scheduled_at, combined)
 
     return message.strip(), scheduled_at
 
