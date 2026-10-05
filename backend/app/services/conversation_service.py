@@ -2,7 +2,9 @@ import json
 import logging
 import time
 import uuid
+from datetime import datetime
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
@@ -24,6 +26,17 @@ from app.services.audio_service import AudioService
 
 logger = logging.getLogger(__name__)
 
+_TZ_AR = ZoneInfo("America/Argentina/Buenos_Aires")
+_DIAS_ES = (
+    "lunes",
+    "martes",
+    "miércoles",
+    "jueves",
+    "viernes",
+    "sábado",
+    "domingo",
+)
+
 _USER_CONTEXT_INSTRUCTIONS = """
 REGLAS_USUARIO (prioridad sobre otras instrucciones):
 Usá el siguiente JSON CRM como fuente de verdad del interlocutor.
@@ -31,6 +44,24 @@ Usá el siguiente JSON CRM como fuente de verdad del interlocutor.
 - No inventes datos que no estén en el JSON.
 - Nunca menciones IDs técnicos ni password.
 """.strip()
+
+
+def build_current_datetime_context(now: datetime | None = None) -> str:
+    """Bloque de fecha/hora local para el system prompt del LLM."""
+    dt = now or datetime.now(_TZ_AR)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_TZ_AR)
+    else:
+        dt = dt.astimezone(_TZ_AR)
+    return (
+        "FECHA_HORA_ACTUAL:\n"
+        f"- datetime: {dt.strftime('%Y-%m-%d %H:%M')}\n"
+        f"- dia: {_DIAS_ES[dt.weekday()]}\n"
+        "- timezone: America/Argentina/Buenos_Aires\n"
+        "- Usá esta referencia para interpretar hoy, mañana, días de la semana y fechas sin año.\n"
+        "- Para recordatorios, preferí el lenguaje relativo del usuario (ej. mañana 16:30); "
+        "el backend valida y corrige el calendario."
+    )
 
 
 def build_user_crm(user: User) -> dict[str, Any]:
@@ -68,6 +99,7 @@ def build_llm_system_prompt(
     base = (file_prompt or "").strip() or (character.system_prompt or "").strip()
     if base:
         parts.append(base)
+    parts.append(build_current_datetime_context())
     if actions is not None:
         parts.append(build_actions_catalog(actions))
     if user:

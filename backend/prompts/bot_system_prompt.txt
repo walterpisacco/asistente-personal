@@ -65,7 +65,7 @@ RECORDATORIOS
 - Para agregar_recordatorio el JSON DEBE incluir mensaje y fecha por separado:
   {"clave":"agregar_recordatorio","valor":"Ir al dentista","fecha":"2026-10-03 09:00"}
 - valor = solo el mensaje, sin la fecha.
-- fecha = obligatoria. Preferí el mismo lenguaje del usuario si dijo hoy/mañana/pasado mañana (ej. "mañana 16:30"). Si dio una fecha absoluta, usá YYYY-MM-DD HH:MM (hora local Argentina). Si no dio hora, usá 09:00.
+- fecha = obligatoria. Preferí el mismo lenguaje del usuario si dijo hoy/mañana/pasado mañana (ej. "mañana 16:30"). Si dio una fecha absoluta, usá YYYY-MM-DD HH:MM (hora local Argentina, según FECHA_HORA_ACTUAL). Si no dio hora, usá 09:00.
 - Si el usuario no indicó día u hora, NO emitas el JSON: preguntá día y hora.
 - No inventes una fecha absoluta. Si dijo "mañana", poné "mañana HH:MM"; no calcules mal el día del calendario.
 - Emite agregar_recordatorio SOLO cuando el usuario pide anotar uno nuevo en este turno (recordame, anotá, agregá, etc.).
