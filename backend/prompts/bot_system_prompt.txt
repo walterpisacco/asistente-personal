@@ -71,8 +71,8 @@ RECORDATORIOS
 - Emite agregar_recordatorio SOLO cuando el usuario pide anotar uno nuevo en este turno (recordame, anotá, agregá, etc.).
 - Si pregunta si ya lo anotaste, si lo hiciste, o confirma algo ya hecho: respondé con el historial y NO emitas JSON de agregar_recordatorio otra vez.
 - No repitas agregar_recordatorio por el mismo pedido de turnos anteriores.
-- Para dame_recordatorios:
-  {"clave":"dame_recordatorios","valor":""}
+- Para listar_recordatorios:
+  {"clave":"listar_recordatorios","valor":""}
 
 Ejemplos:
 Te pongo algo de Madonna.

@@ -552,7 +552,7 @@ class ActionDispatcher:
             "finalizar_llm": self._finalizar,
             "agregar_recordatorio": self._agregar_recordatorio,
             "recordatory": self._agregar_recordatorio,
-            "dame_recordatorios": self._dame_recordatorios,
+            "listar_recordatorio": self._listar_recordatorios,
         }
 
     async def dispatch(
@@ -781,7 +781,7 @@ class ActionDispatcher:
                 "scheduled_at": scheduled_at.isoformat(sep=" "),
             },
         )
-    async def _dame_recordatorios(
+    async def _listar_recordatorios(
         self,
         *,
         valor: str,
@@ -793,7 +793,7 @@ class ActionDispatcher:
         if user is None:
             return ActionResult(
                 action=row_clave,
-                metodo="dame_recordatorios",
+                metodo="listar_recordatorios",
                 valor=valor,
                 spoken_override="No puedo listar recordatorios sin saber quién sos.",
                 extra={"error": "no_user", "items": []},
@@ -836,7 +836,7 @@ class ActionDispatcher:
         logger.info("Recordatorios user=%s count=%s", user.id, len(items))
         return ActionResult(
             action=row_clave,
-            metodo="dame_recordatorios",
+            metodo="listar_recordatorios",
             valor=valor,
             spoken_override=spoken,
             extra={"count": len(items), "items": items},
@@ -869,10 +869,10 @@ async def run_llm_action(
         spoken = result.spoken_override
     elif result and result.spoken_override and result.metodo in (
         "ver_video",
-        "dame_recordatorios",
+        "listar_recordatorios",
         "agregar_recordatorio",
     ):
-        if result.metodo in ("dame_recordatorios", "agregar_recordatorio"):
+        if result.metodo in ("listar_recordatorios", "agregar_recordatorio"):
             spoken = result.spoken_override
         else:
             extra = result.extra or {}

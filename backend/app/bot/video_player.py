@@ -33,18 +33,18 @@ _SUGGESTION_PHRASES: dict[str, str] = {
     "ver_video": "Poné música de {valor}",
     "detener_video": "Pará la música",
     "agregar_recordatorio": "Recordame ir al dentista mañana",
-    "dame_recordatorios": "¿Qué recordatorios tengo?",
+    "listar_recordatorios": "¿Qué recordatorios tengo?",
 }
 _SUGGESTION_ORDER = (
     "ver_video",
     "agregar_recordatorio",
-    "dame_recordatorios",
+    "listar_recordatorio",
     "detener_video",
 )
 _SUGGESTION_FALLBACK = [
     {"clave": "ver_video", "phrase": "Poné música de Madonna"},
     {"clave": "agregar_recordatorio", "phrase": "Recordame ir al dentista mañana"},
-    {"clave": "dame_recordatorios", "phrase": "¿Qué recordatorios tengo?"},
+    {"clave": "listar_recordatorio", "phrase": "¿Qué recordatorios tengo?"},
     {"clave": "detener_video", "phrase": "Pará la música"},
 ]
 

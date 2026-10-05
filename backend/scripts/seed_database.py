@@ -87,7 +87,7 @@ RECORDATORIOS
 - fecha = obligatoria. Preferí el lenguaje del usuario si dijo hoy/mañana/pasado mañana (ej. "mañana 16:30"). Si dio fecha absoluta, usá YYYY-MM-DD HH:MM. Si no dio hora, usá 09:00.
 - Si el usuario no indicó día u hora, NO emitas el JSON: preguntá día y hora.
 - No inventes una fecha absoluta. Si dijo "mañana", poné "mañana HH:MM".
-- Para dame_recordatorios: {"clave":"dame_recordatorios","valor":""}
+- Para listar_recordatorios: {"clave":"listar_recordatorios","valor":""}
 
 Ejemplos:
 Te pongo algo de Madonna.
@@ -171,9 +171,9 @@ def upsert_actions(db: Session) -> None:
             ),
         },
         {
-            "clave": "dame_recordatorios",
+            "clave": "listar_recordatorios",
             "valor": "",
-            "metodo": "dame_recordatorios",
+            "metodo": "listar_recordatorios",
             "description": "Listar recordatorios pendientes del usuario",
         },
     ]
