@@ -83,3 +83,24 @@ class RecordatoryRepository:
             .limit(max(1, limit))
             .all()
         )
+
+    def get_active_for_user(self, user_id: int, recordatory_id: int) -> Recordatory | None:
+        return (
+            self.db.query(Recordatory)
+            .filter(
+                Recordatory.id == int(recordatory_id),
+                Recordatory.user_id == int(user_id),
+                Recordatory.deleted_at.is_(None),
+            )
+            .first()
+        )
+
+    def soft_delete(self, row: Recordatory) -> Recordatory:
+        now = datetime.utcnow()
+        row.deleted_at = now
+        row.updated_at = now
+        row.state = 0
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        return row

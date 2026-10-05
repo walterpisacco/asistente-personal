@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.models.recordatory import Recordatory
 from app.models.user import User
 from app.repositories.action_repository import ActionRepository
 from app.repositories.recordatory_repository import RecordatoryRepository
@@ -54,6 +55,19 @@ class ParsedLlmOutput:
     clave: str | None = None
     valor: str | None = None
     fecha: str | None = None
+    confirm: bool | None = None
+
+
+# Pendiente de confirmación de borrado: user_id → recordatory_id
+_pending_delete: dict[int, int] = {}
+
+_AFFIRM_RE = re.compile(
+    r"(?i)^\s*(sí|si|dale|ok|okay|confirmo|confirmá|confirma|"
+    r"borralo|eliminalo|hacelo|de\s+acuerdo|adelante)\b"
+)
+_DENY_RE = re.compile(
+    r"(?i)^\s*(no|cancelá|cancela|cancelar|dejá|deja|mejor\s+no)\b"
+)
 
 
 @dataclass
@@ -106,6 +120,24 @@ def parse_llm_output(raw: str) -> ParsedLlmOutput:
             fecha = ""
         else:
             fecha = str(fecha).strip()
+        confirm_raw = data.get("confirm")
+        confirm: bool | None
+        if isinstance(confirm_raw, bool):
+            confirm = confirm_raw
+        elif isinstance(confirm_raw, (int, float)):
+            confirm = bool(confirm_raw)
+        elif isinstance(confirm_raw, str):
+            confirm = confirm_raw.strip().lower() in {
+                "1",
+                "true",
+                "si",
+                "sí",
+                "yes",
+                "ok",
+                "dale",
+            }
+        else:
+            confirm = None
         spoken = (text[: match.start()] + text[match.end() :]).strip()
         spoken = re.sub(r"\n{3,}", "\n\n", spoken).strip()
         return ParsedLlmOutput(
@@ -113,6 +145,7 @@ def parse_llm_output(raw: str) -> ParsedLlmOutput:
             clave=clave.strip().lower(),
             valor=valor,
             fecha=fecha or None,
+            confirm=confirm,
         )
 
     return ParsedLlmOutput(spoken_text=text)
@@ -540,6 +573,80 @@ def resolve_recordatory_schedule(
 
     return message.strip(), scheduled_at
 
+
+def _normalize_msg(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _message_match_score(query: str, message: str) -> float:
+    q = _normalize_msg(query)
+    m = _normalize_msg(message)
+    if not q or not m:
+        return 0.0
+    if q == m:
+        return 1.0
+    if q in m or m in q:
+        return 0.85
+    q_tokens = {t for t in re.split(r"\W+", q) if len(t) > 2}
+    m_tokens = {t for t in re.split(r"\W+", m) if len(t) > 2}
+    if not q_tokens:
+        return 0.0
+    overlap = len(q_tokens & m_tokens) / len(q_tokens)
+    return overlap if overlap >= 0.5 else 0.0
+
+
+def _slot_close(
+    target: datetime,
+    candidate: datetime | None,
+    *,
+    minutes: int = 90,
+) -> bool:
+    """Compara mes/día/hora permitiendo desfase de año (recordatorios ya cargados)."""
+    if candidate is None:
+        return False
+    target = _naive_local(target)
+    candidate = _naive_local(candidate)
+    years = {target.year, candidate.year, _now_local().year, _now_local().year + 1}
+    for year in years:
+        try:
+            t = target.replace(year=year)
+        except ValueError:
+            try:
+                t = target.replace(year=year, day=28)
+            except ValueError:
+                continue
+        if abs((t - candidate).total_seconds()) <= minutes * 60:
+            return True
+    return abs((target - candidate).total_seconds()) <= minutes * 60
+
+
+def _format_when(dt: datetime | None) -> str:
+    if dt is None:
+        return "sin fecha"
+    return _naive_local(dt).strftime("%d/%m a las %H:%M")
+
+
+def find_recordatories_for_delete(
+    repo: RecordatoryRepository,
+    *,
+    user_id: int,
+    message: str,
+    scheduled_at: datetime | None,
+) -> list[Recordatory]:
+    """Busca candidatos activos por mensaje (+ fecha si hay)."""
+    rows = repo.list_for_user(user_id, limit=50)
+    scored: list[tuple[float, Recordatory]] = []
+    for row in rows:
+        score = _message_match_score(message, row.message)
+        if score <= 0:
+            continue
+        if scheduled_at is not None and not _slot_close(scheduled_at, row.scheduled_at):
+            continue
+        scored.append((score, row))
+    scored.sort(key=lambda item: (-item[0], item[1].id))
+    return [row for _, row in scored]
+
+
 class ActionDispatcher:
     """Resuelve clave → fila actions → método registrado."""
 
@@ -555,6 +662,9 @@ class ActionDispatcher:
             "agregar_recordatorio": self._agregar_recordatorio,
             "recordatory": self._agregar_recordatorio,
             "listar_recordatorio": self._listar_recordatorios,
+            "listar_recordatorios": self._listar_recordatorios,
+            "eliminar_recordatorio": self._eliminar_recordatorio,
+            "eliminar_recordatorios": self._eliminar_recordatorio,
         }
 
     async def dispatch(
@@ -565,6 +675,7 @@ class ActionDispatcher:
         user: Optional[User],
         user_text: str = "",
         fecha: str | None = None,
+        confirm: bool | None = None,
     ) -> ActionResult | None:
         row = self.repo.get_by_clave(clave)
         if row is None:
@@ -588,11 +699,12 @@ class ActionDispatcher:
             )
 
         logger.info(
-            "Dispatch action clave=%s metodo=%s valor=%r fecha=%r",
+            "Dispatch action clave=%s metodo=%s valor=%r fecha=%r confirm=%r",
             clave,
             metodo,
             valor,
             fecha,
+            confirm,
         )
         return await handler(
             valor=valor,
@@ -600,6 +712,7 @@ class ActionDispatcher:
             user_text=user_text,
             row_clave=clave,
             fecha=fecha,
+            confirm=confirm,
         )
 
     async def _ver_video(
@@ -610,6 +723,7 @@ class ActionDispatcher:
         user_text: str,
         row_clave: str,
         fecha: str | None = None,
+        confirm: bool | None = None,
     ) -> ActionResult:
         yt = YouTubeService(self.settings)
         result = await yt.play(
@@ -632,6 +746,7 @@ class ActionDispatcher:
         user_text: str,
         row_clave: str,
         fecha: str | None = None,
+        confirm: bool | None = None,
     ) -> ActionResult:
         yt = YouTubeService(self.settings)
         result = yt.stop_playback()
@@ -651,6 +766,7 @@ class ActionDispatcher:
         user_text: str,
         row_clave: str,
         fecha: str | None = None,
+        confirm: bool | None = None,
     ) -> ActionResult:
         return ActionResult(
             action=row_clave,
@@ -668,6 +784,7 @@ class ActionDispatcher:
         user_text: str,
         row_clave: str,
         fecha: str | None = None,
+        confirm: bool | None = None,
     ) -> ActionResult:
         if user is None:
             return ActionResult(
@@ -783,6 +900,221 @@ class ActionDispatcher:
                 "scheduled_at": scheduled_at.isoformat(sep=" "),
             },
         )
+
+    async def _eliminar_recordatorio(
+        self,
+        *,
+        valor: str,
+        user: Optional[User],
+        user_text: str,
+        row_clave: str,
+        fecha: str | None = None,
+        confirm: bool | None = None,
+    ) -> ActionResult:
+        if user is None:
+            return ActionResult(
+                action=row_clave,
+                metodo="eliminar_recordatorio",
+                valor=valor,
+                spoken_override="No puedo borrar recordatorios sin saber quién sos.",
+                extra={"error": "no_user"},
+            )
+
+        uid = int(user.id)
+        repo = RecordatoryRepository(self.db)
+        text = (user_text or "").strip()
+
+        # Cancelación de un borrado pendiente
+        if uid in _pending_delete and (_DENY_RE.search(text) or confirm is False):
+            _pending_delete.pop(uid, None)
+            return ActionResult(
+                action=row_clave,
+                metodo="eliminar_recordatorio",
+                valor=valor,
+                spoken_override="Listo, no borro nada.",
+                extra={"cancelled": True},
+            )
+
+        # Confirmación: flag del LLM o texto afirmativo (sí/dale), no "borra…"
+        wants_confirm = bool(confirm) or bool(_AFFIRM_RE.search(text))
+        pending_id = _pending_delete.get(uid)
+
+        if wants_confirm and pending_id is not None:
+            row = repo.get_active_for_user(uid, pending_id)
+            if row is None:
+                _pending_delete.pop(uid, None)
+                return ActionResult(
+                    action=row_clave,
+                    metodo="eliminar_recordatorio",
+                    valor=valor,
+                    spoken_override="Ese recordatorio ya no está. ¿Cuál querés borrar?",
+                    extra={"error": "pending_missing"},
+                )
+            repo.soft_delete(row)
+            _pending_delete.pop(uid, None)
+            spoken = (
+                f"Listo, borré «{row.message}» del {_format_when(row.scheduled_at)}."
+            )
+            return ActionResult(
+                action=row_clave,
+                metodo="eliminar_recordatorio",
+                valor=row.message,
+                spoken_override=spoken,
+                extra={
+                    "deleted": True,
+                    "id": row.id,
+                    "message": row.message,
+                    "scheduled_at": (
+                        row.scheduled_at.isoformat(sep=" ") if row.scheduled_at else None
+                    ),
+                },
+            )
+
+        # Sin valor del LLM no inventar mensaje desde "borra un recordatorio"
+        if not (valor or "").strip():
+            return ActionResult(
+                action=row_clave,
+                metodo="eliminar_recordatorio",
+                valor=valor,
+                spoken_override=(
+                    "Decime el mensaje del recordatorio, el día y la hora "
+                    "para buscarlo."
+                ),
+                extra={"error": "missing_message"},
+            )
+
+        message, scheduled_at = resolve_recordatory_schedule(
+            valor=valor,
+            fecha=fecha,
+            user_text=user_text,
+        )
+        # Para borrar, la fecha puede ser pasada: matcheamos por mes/día/hora.
+
+        # Si la fecha no parseó, intentar extract del pedido
+        if scheduled_at is None:
+            scheduled_at, _ = extract_datetime_from_text(
+                " ".join(p for p in (user_text, fecha or "") if p)
+            )
+        if scheduled_at is None:
+            return ActionResult(
+                action=row_clave,
+                metodo="eliminar_recordatorio",
+                valor=message,
+                spoken_override=(
+                    f"¿Qué día y hora era el recordatorio de «{message}»?"
+                ),
+                extra={"error": "missing_fecha", "message": message},
+            )
+
+        matches = find_recordatories_for_delete(
+            repo,
+            user_id=uid,
+            message=message,
+            scheduled_at=scheduled_at,
+        )
+        # Si con fecha no hay match, reintentar solo por mensaje
+        if not matches and scheduled_at is not None:
+            by_msg = find_recordatories_for_delete(
+                repo,
+                user_id=uid,
+                message=message,
+                scheduled_at=None,
+            )
+            if len(by_msg) == 1:
+                matches = by_msg
+
+        if not matches:
+            return ActionResult(
+                action=row_clave,
+                metodo="eliminar_recordatorio",
+                valor=message,
+                spoken_override=(
+                    f"No encontré un recordatorio de «{message}»"
+                    + (
+                        f" para el {_format_when(scheduled_at)}."
+                        if scheduled_at
+                        else "."
+                    )
+                    + " ¿Me repetís mensaje, día y hora?"
+                ),
+                extra={"error": "not_found", "message": message},
+            )
+
+        if len(matches) > 1:
+            parts = [
+                f"{i}. {r.message}, {_format_when(r.scheduled_at)}"
+                for i, r in enumerate(matches[:5], start=1)
+            ]
+            return ActionResult(
+                action=row_clave,
+                metodo="eliminar_recordatorio",
+                valor=message,
+                spoken_override=(
+                    "Encontré más de uno. ¿Cuál borro? "
+                    + ". ".join(parts)
+                    + "."
+                ),
+                extra={
+                    "error": "ambiguous",
+                    "items": [
+                        {
+                            "id": r.id,
+                            "message": r.message,
+                            "scheduled_at": (
+                                r.scheduled_at.isoformat(sep=" ")
+                                if r.scheduled_at
+                                else None
+                            ),
+                        }
+                        for r in matches[:5]
+                    ],
+                },
+            )
+
+        row = matches[0]
+
+        # Confirmación con los mismos datos
+        if wants_confirm or (confirm is True):
+            repo.soft_delete(row)
+            _pending_delete.pop(uid, None)
+            spoken = (
+                f"Listo, borré «{row.message}» del {_format_when(row.scheduled_at)}."
+            )
+            return ActionResult(
+                action=row_clave,
+                metodo="eliminar_recordatorio",
+                valor=row.message,
+                spoken_override=spoken,
+                extra={
+                    "deleted": True,
+                    "id": row.id,
+                    "message": row.message,
+                    "scheduled_at": (
+                        row.scheduled_at.isoformat(sep=" ") if row.scheduled_at else None
+                    ),
+                },
+            )
+
+        _pending_delete[uid] = int(row.id)
+        spoken = (
+            f"Encontré «{row.message}» para el {_format_when(row.scheduled_at)}. "
+            "¿Confirmás que lo borro?"
+        )
+        return ActionResult(
+            action=row_clave,
+            metodo="eliminar_recordatorio",
+            valor=row.message,
+            spoken_override=spoken,
+            extra={
+                "needs_confirm": True,
+                "id": row.id,
+                "message": row.message,
+                "scheduled_at": (
+                    row.scheduled_at.isoformat(sep=" ") if row.scheduled_at else None
+                ),
+            },
+        )
+
     async def _listar_recordatorios(
         self,
         *,
@@ -791,6 +1123,7 @@ class ActionDispatcher:
         user_text: str,
         row_clave: str,
         fecha: str | None = None,
+        confirm: bool | None = None,
     ) -> ActionResult:
         if user is None:
             return ActionResult(
@@ -866,6 +1199,7 @@ async def run_llm_action(
         user=user,
         user_text=user_text,
         fecha=parsed.fecha,
+        confirm=parsed.confirm,
     )
     if result and result.spoken_override and not spoken:
         spoken = result.spoken_override
@@ -873,8 +1207,13 @@ async def run_llm_action(
         "ver_video",
         "listar_recordatorios",
         "agregar_recordatorio",
+        "eliminar_recordatorio",
     ):
-        if result.metodo in ("listar_recordatorios", "agregar_recordatorio"):
+        if result.metodo in (
+            "listar_recordatorios",
+            "agregar_recordatorio",
+            "eliminar_recordatorio",
+        ):
             spoken = result.spoken_override
         else:
             extra = result.extra or {}

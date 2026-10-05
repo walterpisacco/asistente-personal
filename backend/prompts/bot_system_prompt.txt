@@ -73,6 +73,11 @@ RECORDATORIOS
 - No repitas agregar_recordatorio por el mismo pedido de turnos anteriores.
 - Para listar_recordatorios:
   {"clave":"listar_recordatorios","valor":""}
+- Para eliminar_recordatorio: si faltan mensaje, día u hora, preguntá y NO emitas JSON.
+- Con mensaje + día + hora:
+  {"clave":"eliminar_recordatorio","valor":"Ir al dentista","fecha":"mañana 16:30"}
+- El backend busca y pide confirmación. Si el usuario dice que sí, reemití el mismo JSON con "confirm":true.
+- Si dice que no: mismo JSON con "confirm":false.
 
 Ejemplos:
 Te pongo algo de Madonna.

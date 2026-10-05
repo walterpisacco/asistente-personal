@@ -88,6 +88,11 @@ RECORDATORIOS
 - Si el usuario no indicó día u hora, NO emitas el JSON: preguntá día y hora.
 - No inventes una fecha absoluta. Si dijo "mañana", poné "mañana HH:MM".
 - Para listar_recordatorios: {"clave":"listar_recordatorios","valor":""}
+- Para eliminar_recordatorio: si el usuario quiere borrar uno y faltan mensaje, día u hora, preguntá esos datos y NO emitas JSON.
+- Cuando tengas mensaje + día + hora, emití:
+  {"clave":"eliminar_recordatorio","valor":"Ir al dentista","fecha":"mañana 16:30"}
+- El backend busca y pide confirmación. Si el usuario confirma (sí/dale), emití el mismo JSON con "confirm":true.
+- Si cancela (no), emití el JSON con "confirm":false.
 
 Ejemplos:
 Te pongo algo de Madonna.
@@ -175,6 +180,17 @@ def upsert_actions(db: Session) -> None:
             "valor": "",
             "metodo": "listar_recordatorios",
             "description": "Listar recordatorios pendientes del usuario",
+        },
+        {
+            "clave": "eliminar_recordatorio",
+            "valor": "Ir al dentista",
+            "metodo": "eliminar_recordatorio",
+            "description": (
+                "Eliminar recordatorio. Pedir mensaje+día+hora si faltan. "
+                'JSON: {"clave":"eliminar_recordatorio","valor":"mensaje","fecha":"mañana 16:30"}. '
+                "Sin confirm no borra (pide confirmación). "
+                'Para confirmar: mismo JSON con "confirm":true. Cancelar: "confirm":false.'
+            ),
         },
     ]
     for item in seeds:
