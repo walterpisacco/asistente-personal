@@ -18,10 +18,14 @@ class RecordatoryRepository:
         message: str,
         scheduled_at: datetime | None = None,
     ) -> Recordatory:
+        now = datetime.utcnow()
         row = Recordatory(
             user_id=int(user_id),
             message=message.strip()[:1000],
             scheduled_at=scheduled_at,
+            created_at=now,
+            updated_at=now,
+            state=1,
         )
         self.db.add(row)
         self.db.commit()

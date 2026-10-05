@@ -872,12 +872,14 @@ async def run_llm_action(
         "dame_recordatorios",
         "agregar_recordatorio",
     ):
-        extra = result.extra or {}
-        force_override = bool(
-            extra.get("skipped")
-            or extra.get("deduped")
-            or result.metodo == "dame_recordatorios"
-        )
-        if force_override or len(spoken) < 8:
+        if result.metodo in ("dame_recordatorios", "agregar_recordatorio"):
             spoken = result.spoken_override
+        else:
+            extra = result.extra or {}
+            force_override = bool(
+                extra.get("skipped")
+                or extra.get("deduped")
+            )
+            if force_override or len(spoken) < 8:
+                spoken = result.spoken_override
     return spoken, result
