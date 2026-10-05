@@ -180,35 +180,28 @@ def ensure_future_datetime(
     user_text: str = "",
     fecha: str = "",
 ) -> datetime | None:
-    """Si la fecha quedó en el pasado y el usuario no dijo ese año, avanza años.
+    """Normaliza fechas sin año explícito al próximo futuro ≤ 365 días.
 
-    Cubre el caso típico: el LLM inventa 2023-11-12 cuando el usuario dijo
-    «el 12 de noviembre» (sin año) y hoy es 2026-10-02 → 2026-11-12.
+    - Si el usuario dijo un año (2026, etc.), se respeta tal cual.
+    - Si no: se toma mes/día/hora y se ancla al año correcto
+      (este o el próximo), sin pasar de 365 días desde ahora.
+    - Hora de hoy/ayer ya pasada → +1 día (no +1 año).
     """
     if dt is None:
         return None
     now = _now_local()
-    if dt >= now - timedelta(minutes=1):
-        if dt.year <= now.year + 2 or _EXPLICIT_YEAR_RE.search(user_text or ""):
-            return dt
-        for year in range(now.year, now.year + 3):
-            try:
-                candidate = dt.replace(year=year)
-            except ValueError:
-                continue
-            if candidate >= now - timedelta(minutes=1):
-                logger.info("Ajustando año absurdo %s → %s", dt, candidate)
-                return candidate
-        return dt
+    slack = timedelta(minutes=1)
+    horizon = now + timedelta(days=365)
 
+    # Año dicho por el usuario → no reinterpretar.
     if _EXPLICIT_YEAR_RE.search(user_text or ""):
         return dt
 
-    candidate = dt
     # Hora de hoy/ayer ya pasada → sumar días (no años). Evita 15:00 → 2027.
-    if (now - candidate) <= timedelta(days=2):
+    if dt < now - slack and (now - dt) <= timedelta(days=2):
+        candidate = dt
         for _ in range(3):
-            if candidate >= now - timedelta(minutes=1):
+            if candidate >= now - slack:
                 if candidate != dt:
                     logger.info(
                         "Ajustando hora pasada %s → %s (user_text=%r fecha_llm=%r)",
@@ -220,22 +213,31 @@ def ensure_future_datetime(
                 return candidate
             candidate = candidate + timedelta(days=1)
 
-    candidate = dt
-    for _ in range(6):
-        if candidate >= now - timedelta(minutes=1):
-            if candidate != dt:
-                logger.info(
-                    "Ajustando fecha pasada %s → %s (user_text=%r fecha_llm=%r)",
-                    dt,
-                    candidate,
-                    user_text,
-                    fecha,
-                )
-            return candidate
+    # Sin año: mes/día/hora → próximo instante en [now, now+365d].
+    best: datetime | None = None
+    for year in (now.year, now.year + 1):
         try:
-            candidate = candidate.replace(year=candidate.year + 1)
+            candidate = dt.replace(year=year)
         except ValueError:
-            candidate = candidate.replace(year=candidate.year + 1, day=28)
+            try:
+                candidate = dt.replace(year=year, day=28)
+            except ValueError:
+                continue
+        if now - slack <= candidate <= horizon:
+            if best is None or candidate < best:
+                best = candidate
+
+    if best is not None:
+        if best != dt:
+            logger.info(
+                "Ajustando fecha sin año %s → %s (user_text=%r fecha_llm=%r)",
+                dt,
+                best,
+                user_text,
+                fecha,
+            )
+        return best
+
     return dt
 
 
