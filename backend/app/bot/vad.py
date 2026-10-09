@@ -91,6 +91,30 @@ class UtteranceCapture:
                 live.abort()
                 live_open = False
 
+        def _emit(reason: str) -> tuple[bytes | None, str]:
+            peak = max((rms_energy(f) for f in frames), default=0.0)
+            if peak < self.vad_energy or speech_ms < self.min_speech_ms:
+                logger.info(
+                    "Sin sonido (rms=%.0f speech=%sms), no envío a STT",
+                    peak,
+                    speech_ms,
+                )
+                _drop_live()
+                return None, "no_speech"
+            _close_live()
+            wav = pcm16_to_wav_bytes(np.concatenate(frames), self.sample_rate)
+            return wav, reason
+
+        def _maybe_open_live() -> None:
+            """No abre el STT hasta acumular voz de verdad."""
+            nonlocal live_open
+            if live is None or live_open or speech_ms < self.min_speech_ms:
+                return
+            live.start()
+            live_open = True
+            for frame in frames:
+                live.push(frame)
+
         stalls = 0
         try:
             while True:
@@ -109,15 +133,12 @@ class UtteranceCapture:
                             return None, "idle_end_call"
                         continue
                     if utterance_ms >= self.max_utterance_ms:
-                        _close_live()
                         if not frames:
-                            return None, "max_utterance"
-                        wav = pcm16_to_wav_bytes(np.concatenate(frames), self.sample_rate)
-                        return wav, "max_utterance"
+                            _drop_live()
+                            return None, "no_speech"
+                        return _emit("max_utterance")
                     if speech_ms >= self.min_speech_ms and silence_ms >= self.silence_ms:
-                        _close_live()
-                        wav = pcm16_to_wav_bytes(np.concatenate(frames), self.sample_rate)
-                        return wav, "speech"
+                        return _emit("speech")
                     continue
                 stalls = 0
                 energy = rms_energy(block)
@@ -134,14 +155,10 @@ class UtteranceCapture:
                         speaking = True
                         frames.extend(list(preroll))
                         preroll.clear()
-                        if live is not None:
-                            live.start()
-                            live_open = True
-                            for frame in frames:
-                                live.push(frame)
                         speech_ms = self.block_ms if is_voice else 0
                         silence_ms = 0 if is_voice else self.block_ms
                         utterance_ms = len(frames) * self.block_ms
+                        _maybe_open_live()
                         continue
 
                 frames.append(block)
@@ -151,21 +168,18 @@ class UtteranceCapture:
                 if is_voice:
                     speech_ms += self.block_ms
                     silence_ms = 0
+                    _maybe_open_live()
                 else:
                     silence_ms += self.block_ms
 
                 if utterance_ms >= self.max_utterance_ms:
-                    _close_live()
-                    wav = pcm16_to_wav_bytes(np.concatenate(frames), self.sample_rate)
-                    return wav, "max_utterance"
+                    return _emit("max_utterance")
 
                 if (
                     speech_ms >= self.min_speech_ms
                     and silence_ms >= self.silence_ms
                 ):
-                    _close_live()
-                    wav = pcm16_to_wav_bytes(np.concatenate(frames), self.sample_rate)
-                    return wav, "speech"
+                    return _emit("speech")
 
                 if speech_ms < self.min_speech_ms and silence_ms >= self.silence_ms * 2:
                     # Ruido corto: reset

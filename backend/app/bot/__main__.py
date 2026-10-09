@@ -234,6 +234,9 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
             )
             mic.stop()
 
+            if reason == "no_speech":
+                continue
+
             if reason == "idle_end_call" or utterance is None:
                 logger.info("Fin de conversación por silencio prolongado")
                 if is_showing_video():
