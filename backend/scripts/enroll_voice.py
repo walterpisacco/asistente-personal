@@ -34,7 +34,7 @@ def _read_wav_file(path: Path) -> bytes:
     return path.read_bytes()
 
 
-def _record_wake_phrase(settings, *, username: str, phrase: str, max_attempts: int = 3) -> bytes:
+def _record_wake_phrase(settings, *, alias: str, phrase: str, max_attempts: int = 3) -> bytes:
     """Graba la frase de activación del usuario y la valida con el spotter local."""
     capture = UtteranceCapture(
         sample_rate=settings.bot_sample_rate,
@@ -44,7 +44,7 @@ def _record_wake_phrase(settings, *, username: str, phrase: str, max_attempts: i
         vad_energy=settings.bot_vad_energy,
         preroll_ms=_ENROLL_PREROLL_MS,
     )
-    spotter = create_wake_spotter(settings, [username])
+    spotter = create_wake_spotter(settings, [alias])
 
     print("Vas a enrolar con la frase corta del wake.")
     print(f"Decí exactamente: «{phrase}» (como cuando activás el bot).")
@@ -80,7 +80,7 @@ def _list_users(db) -> None:
         return
     print("Usuarios existentes:")
     for u in users:
-        print(f"  {u.id}\t{u.username}\t{u.full_name or ''}")
+        print(f"  {u.id}\t{u.alias}\t{u.full_name or ''}")
 
 
 def main() -> None:
@@ -96,7 +96,7 @@ def main() -> None:
     parser.add_argument(
         "--phrase",
         default=None,
-        help="Frase a pedir (default: hola soy {username})",
+        help="Frase a pedir (default: hola soy {alias})",
     )
     parser.add_argument(
         "--attempts",
@@ -125,13 +125,13 @@ def main() -> None:
                 f"User not found: {user_id} (no se crea; usá un id de la lista)"
             )
 
-        phrase = args.phrase or activation_phrase(user.username)
+        phrase = args.phrase or activation_phrase(user.alias or "")
         if args.wav:
             audio = _read_wav_file(args.wav)
         else:
             audio = _record_wake_phrase(
                 settings,
-                username=user.username,
+                alias=user.alias,
                 phrase=phrase,
                 max_attempts=max(1, args.attempts),
             )
@@ -144,7 +144,7 @@ def main() -> None:
             f"Enrolado user={user_id} embedding_id={row.id} "
             f"dims={len(row.embedding_voice)} db={db_name}"
         )
-        print(f"Tip: para activar el bot decí «{activation_phrase(user.username)}».")
+        print(f"Tip: para activar el bot decí «{activation_phrase(user.alias or '')}».")
     finally:
         db.close()
 

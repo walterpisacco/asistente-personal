@@ -84,17 +84,17 @@ def _token_symbols(tokens_path: Path) -> set[str]:
     return symbols
 
 
-def activation_phrases(username: str) -> list[str]:
-    """Frases de wake para un usuario: «hola soy walter» y «soy walter»."""
-    name = _normalize(username)
+def activation_phrases(alias: str) -> list[str]:
+    """Frases de wake para un usuario: «hola soy {alias}» y «soy {alias}»."""
+    name = _normalize(alias)
     if not name:
-        raise ValueError(f"username inválido: {username!r}")
+        raise ValueError(f"alias inválido: {alias!r}")
     return [f"hola soy {name}", f"soy {name}"]
 
 
-def activation_phrase(username: str) -> str:
-    """Frase canónica (enrolamiento / tips): «hola soy {name}»."""
-    return activation_phrases(username)[0]
+def activation_phrase(alias: str) -> str:
+    """Frase canónica (enrolamiento / tips): «hola soy {alias}»."""
+    return activation_phrases(alias)[0]
 
 
 # Frases locales (KWS) → comando. Sin STT; útiles mientras hay video.

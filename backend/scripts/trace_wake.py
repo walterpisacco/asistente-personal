@@ -6,7 +6,7 @@ Uso:
   .venv/bin/python scripts/trace_wake.py --seconds 60
   .venv/bin/python scripts/trace_wake.py --threshold 0.15
 
-Decí exactamente: «hola soy {username}» (ej. hola soy walter).
+Decí exactamente: «hola soy {alias}» (ej. hola soy walter).
 Ctrl+C para salir.
 """
 
@@ -39,17 +39,17 @@ def _usernames() -> list[str]:
     db = SessionLocal()
     try:
         rows = (
-            db.query(User.username)
+            db.query(User.alias)
             .filter(User.is_active.is_(True))
             .order_by(User.username)
             .all()
         )
     finally:
         db.close()
-    names = [n.strip() for (n,) in rows if n and str(n).strip()]
-    if not names:
-        raise SystemExit("No hay usuarios activos en DB")
-    return names
+    aliases = [a.strip() for (a,) in rows if a and str(a).strip()]
+    if not aliases:
+        raise SystemExit("No hay usuarios activos con alias en DB")
+    return aliases
 
 
 def main() -> None:

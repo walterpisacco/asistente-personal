@@ -26,6 +26,10 @@ from app.services.audio_service import AudioService
 
 logger = logging.getLogger(__name__)
 
+
+def _ms(value: object) -> str:
+    return f"{value}ms" if isinstance(value, int) else "-"
+
 _TZ_AR = ZoneInfo("America/Argentina/Buenos_Aires")
 _DIAS_ES = (
     "lunes",
@@ -158,6 +162,7 @@ class ConversationService:
         )
         saved = self.conversations.create(conversation)
 
+        intro_latency: dict[str, int] = {}
         if self.settings.bot_opening_mode == "llm":
             system_prompt = build_llm_system_prompt(
                 character,
@@ -165,16 +170,25 @@ class ConversationService:
                 self.settings.resolved_bot_system_prompt,
                 self._actions(),
             )
+            t_llm = time.perf_counter()
             intro_text = await self.llm.generate(
                 [{"role": "user", "content": "Saludame brevemente para empezar."}],
                 system_prompt,
             )
+            intro_latency["llm_ms"] = int((time.perf_counter() - t_llm) * 1000)
         else:
             name = (user.full_name or "").strip()
             greeting = self.settings.bot_greeting.strip() or "Hola"
             intro_text = f"{greeting}{', ' + name if name else ''}. ¿En qué te ayudo?"
 
+        t_tts = time.perf_counter()
         audio_content = await self.tts.synthesize(intro_text, character.voice_id)
+        intro_latency["tts_ms"] = int((time.perf_counter() - t_tts) * 1000)
+        logger.info(
+            "Tiempos STT=- LLM=%s TTS=%s (intro)",
+            _ms(intro_latency.get("llm_ms")),
+            _ms(intro_latency.get("tts_ms")),
+        )
         audio_path = await self.audio.save_audio(
             audio_content, extension=self._tts_extension()
         )
@@ -210,6 +224,10 @@ class ConversationService:
         )
         latency["stt_ms"] = int((time.perf_counter() - t0) * 1000)
         if not user_text:
+            logger.info(
+                "Tiempos STT=%s LLM=- TTS=-",
+                _ms(latency.get("stt_ms")),
+            )
             return {
                 "conversation_id": conversation.id,
                 "user_text": "",
@@ -274,11 +292,10 @@ class ConversationService:
         )
 
         logger.info(
-            "conversation=%s stt=%sms llm=%sms tts=%sms",
-            conversation.id,
-            latency.get("stt_ms"),
-            latency.get("llm_ms"),
-            latency.get("tts_ms"),
+            "Tiempos STT=%s LLM=%s TTS=%s",
+            _ms(latency.get("stt_ms")),
+            _ms(latency.get("llm_ms")),
+            _ms(latency.get("tts_ms")),
         )
 
         return {

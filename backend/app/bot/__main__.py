@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
 from pathlib import Path
 
 _BACKEND = Path(__file__).resolve().parents[2]
@@ -69,17 +70,17 @@ async def run_bot() -> None:
 
     db = SessionLocal()
     try:
-        usernames = _active_usernames(db)
+        aliases = _active_aliases(db)
     finally:
         db.close()
-    spotter = create_wake_spotter(settings, usernames)
+    spotter = create_wake_spotter(settings, aliases)
     try:
         show_idle()
     except Exception as exc:  # noqa: BLE001
         logger.warning("No se pudo abrir la ventana de inicio: %s", exc)
     logger.info(
         "TORI listo. Frases=%s silence=%sms end_call=%sms post_tts=%sms settle=%sms",
-        len(usernames),
+        len(aliases),
         settings.bot_silence_ms,
         settings.bot_end_call_ms,
         settings.bot_post_tts_delay_ms,
@@ -94,17 +95,17 @@ async def run_bot() -> None:
             await _idle_and_session(mic, capture, settings, spotter)
 
 
-def _active_usernames(db) -> list[str]:
+def _active_aliases(db) -> list[str]:
     rows = (
-        db.query(User.username)
+        db.query(User.alias)
         .filter(User.is_active.is_(True))
-        .order_by(User.username)
+        .order_by(User.alias)
         .all()
     )
-    names = [name.strip() for (name,) in rows if name and str(name).strip()]
-    if not names:
-        raise RuntimeError("No hay usuarios activos para la frase de activación")
-    return names
+    aliases = [alias.strip() for (alias,) in rows if alias and str(alias).strip()]
+    if not aliases:
+        raise RuntimeError("No hay alias de usuarios activos para la frase de activación")
+    return aliases
 
 
 async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings, spotter) -> None:
@@ -118,16 +119,16 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
         trace=bool(getattr(settings, "bot_wake_trace", False)),
     )
     mic.stop()
-    username = spotter.matched_username()
+    alias = spotter.matched_username()
     command = spotter.matched_command()
     logger.info(
-        "Wake word detectada (%s) usuario=%s cmd=%s",
+        "Wake word detectada (%s) alias=%s cmd=%s",
         spotter.last_keyword,
-        username or "-",
+        alias or "-",
         command or "-",
     )
 
-    if not username:
+    if not alias:
         if command == "detener_video" and is_showing_video():
             return_to_idle()
         elif command:
@@ -139,7 +140,7 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
     db = SessionLocal()
     try:
         user = (
-            db.query(User).filter(User.username == username, User.is_active.is_(True)).first()
+            db.query(User).filter(User.alias == alias, User.is_active.is_(True)).first()
         )
         if user is None:
             logger.warning("Frase %r sin usuario activo.", spotter.last_keyword)
@@ -176,7 +177,12 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
                     bye = "Listo, paro el video."
                     character = service.characters.get_by_id(conversation.character_id)
                     if character:
+                        t_tts = time.perf_counter()
                         stop_audio = await service.tts.synthesize(bye, character.voice_id)
+                        logger.info(
+                            "Tiempos STT=- LLM=- TTS=%sms (detener video)",
+                            int((time.perf_counter() - t_tts) * 1000),
+                        )
                         logger.info("Estado=talking (stop video)")
                         _speak(settings, mic, stop_audio)
                     continue
@@ -209,7 +215,12 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
                 bye = "Chau, acá estoy cuando me necesites."
                 character = service.characters.get_by_id(conversation.character_id)
                 if character:
+                    t_tts = time.perf_counter()
                     bye_audio = await service.tts.synthesize(bye, character.voice_id)
+                    logger.info(
+                        "Tiempos STT=- LLM=- TTS=%sms (despedida)",
+                        int((time.perf_counter() - t_tts) * 1000),
+                    )
                     logger.info("Estado=talking (bye)")
                     _speak(settings, mic, bye_audio)
                 break

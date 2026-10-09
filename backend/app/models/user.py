@@ -12,6 +12,7 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(80), unique=True, index=True, nullable=False)
+    alias: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
     gender: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)

@@ -1,6 +1,6 @@
 # Asistente personal TORI
 
-Bot de voz headless (sin frontend): escucha continua, se activa con **hola soy {username}**, conversación STT → LLM → TTS.
+Bot de voz headless (sin frontend): escucha continua, se activa con **hola soy {alias}**, conversación STT → LLM → TTS.
 
 ## Requisitos
 
@@ -41,7 +41,7 @@ python scripts/run_bot.py
 https://github.com/k2-fsa/sherpa-onnx
 ```
 
-El bot toma cada usuario activo y arma `hola soy {username}` (minúsculas, sin acentos: «hola soy walter»).
+El bot toma cada usuario activo y arma `hola soy {alias}` (minúsculas, sin acentos: «hola soy walter»).
 
 Esas frases se escriben en `backend/models/kws-es/keywords.wake.txt`. El archivo se regenera en cada inicio: no editarlo a mano. `backend/models/` no va al repositorio.
 

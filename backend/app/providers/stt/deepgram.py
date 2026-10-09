@@ -41,7 +41,6 @@ class DeepgramSTTProvider(STTProvider):
             "model": self.model,
             "language": lang,
             "punctuate": "true",
-            "smart_format": "true",
         }
         headers = {
             "Authorization": f"Token {self.api_key}",
