@@ -1,8 +1,8 @@
 import logging
 
-import httpx
-
+from app.providers.deepgram_http import deepgram_http
 from app.providers.stt.base import STTProvider
+from app.providers.stt.deepgram_live import DeepgramLiveSession
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +47,15 @@ class DeepgramSTTProvider(STTProvider):
             "Content-Type": self._content_type(audio),
         }
         logger.info("Deepgram STT bytes=%s lang=%s model=%s", len(audio), lang, self.model)
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(url, params=params, headers=headers, content=audio)
-            response.raise_for_status()
-            data = response.json()
+        response = await deepgram_http().post(url, params=params, headers=headers, content=audio)
+        response.raise_for_status()
+        data = response.json()
         try:
             alt = data["results"]["channels"][0]["alternatives"][0]
             return (alt.get("transcript") or "").strip()
         except (KeyError, IndexError, TypeError):
             logger.warning("Deepgram STT empty response: %s", data)
             return ""
+
+    def open_live(self, *, sample_rate: int = 16000) -> DeepgramLiveSession:
+        return DeepgramLiveSession(self, sample_rate=sample_rate)

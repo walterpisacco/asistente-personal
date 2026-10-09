@@ -1,8 +1,8 @@
 import logging
 import re
+from collections.abc import AsyncIterator
 
-import httpx
-
+from app.providers.deepgram_http import deepgram_http
 from app.providers.tts.base import TTSProvider
 
 logger = logging.getLogger(__name__)
@@ -12,6 +12,8 @@ DEEPGRAM_VOICE_RE = re.compile(r"^aura-", re.I)
 
 
 class DeepgramTTSProvider(TTSProvider):
+    streams_audio = True
+
     def __init__(
         self,
         api_key: str,
@@ -30,6 +32,12 @@ class DeepgramTTSProvider(TTSProvider):
         return self.default_voice
 
     async def synthesize(self, text: str, voice_id: str) -> bytes:
+        parts: list[bytes] = []
+        async for chunk in self.iter_audio(text, voice_id):
+            parts.append(chunk)
+        return b"".join(parts)
+
+    async def iter_audio(self, text: str, voice_id: str) -> AsyncIterator[bytes]:
         model = self._resolve_voice(voice_id)
         url = f"{self.base_url}/v1/speak"
         params = {"model": model}
@@ -39,7 +47,14 @@ class DeepgramTTSProvider(TTSProvider):
         }
         payload = {"text": text}
         logger.info("Deepgram TTS model=%s chars=%s", model, len(text))
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(url, params=params, headers=headers, json=payload)
+        client = deepgram_http()
+        async with client.stream(
+            "POST", url, params=params, headers=headers, json=payload
+        ) as response:
+            if response.status_code >= 400:
+                body = await response.aread()
+                logger.warning("Deepgram TTS %s %s", response.status_code, body[:300])
             response.raise_for_status()
-            return response.content
+            async for chunk in response.aiter_bytes(chunk_size=4096):
+                if chunk:
+                    yield chunk

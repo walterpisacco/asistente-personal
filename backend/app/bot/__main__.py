@@ -20,7 +20,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from app.bot.kws import create_wake_spotter
-from app.bot.playback import MicStream, begin_listening, speak
+from app.bot.playback import MicStream, StreamPlayer, begin_listening, consume_tts, speak
 from app.bot.vad import UtteranceCapture
 from app.bot.video_player import is_showing_video, return_to_idle, show_idle
 from app.core.config import get_settings
@@ -46,6 +46,26 @@ def _speak(settings, mic: MicStream, audio: bytes) -> None:
         extension=_tts_ext(settings),
         post_tts_delay_ms=settings.bot_post_tts_delay_ms,
     )
+
+
+def _pause_after_tts(settings) -> None:
+    if settings.bot_post_tts_delay_ms > 0:
+        time.sleep(settings.bot_post_tts_delay_ms / 1000.0)
+
+
+async def _speak_text(settings, mic: MicStream, tts, text: str, voice_id: str, label: str) -> None:
+    player = StreamPlayer(_tts_ext(settings))
+    audio, ttfb_ms, total_ms = await consume_tts(tts, text, voice_id, player)
+    logger.info(
+        "Tiempos STT=- LLM=- TTS=%sms primer byte (total %sms) (%s)",
+        ttfb_ms,
+        total_ms,
+        label,
+    )
+    if audio and not player.played:
+        _speak(settings, mic, audio)
+    else:
+        _pause_after_tts(settings)
 
 
 def _listen(settings, mic: MicStream) -> None:
@@ -150,10 +170,17 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
         service = ConversationService(db, settings)
 
         logger.info("Estado=thinking (intro)")
-        conversation, intro_audio, intro_text = await service.start_conversation(user)
+        intro_player = StreamPlayer(_tts_ext(settings))
+        conversation, intro_audio, intro_text = await service.start_conversation(
+            user, player=intro_player
+        )
         logger.info("Intro: %s", intro_text)
-        logger.info("Estado=talking")
-        _speak(settings, mic, intro_audio)
+        if intro_audio and not intro_player.played:
+            logger.info("Estado=talking")
+            _speak(settings, mic, intro_audio)
+        else:
+            logger.info("Estado=talking")
+            _pause_after_tts(settings)
 
         while True:
             if is_showing_video():
@@ -177,14 +204,10 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
                     bye = "Listo, paro el video."
                     character = service.characters.get_by_id(conversation.character_id)
                     if character:
-                        t_tts = time.perf_counter()
-                        stop_audio = await service.tts.synthesize(bye, character.voice_id)
-                        logger.info(
-                            "Tiempos STT=- LLM=- TTS=%sms (detener video)",
-                            int((time.perf_counter() - t_tts) * 1000),
-                        )
                         logger.info("Estado=talking (stop video)")
-                        _speak(settings, mic, stop_audio)
+                        await _speak_text(
+                            settings, mic, service.tts, bye, character.voice_id, "detener video"
+                        )
                     continue
                 if spotter.matched_username():
                     logger.info(
@@ -200,10 +223,14 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
 
             logger.info("Estado=listening")
             _listen(settings, mic)
+            live = None
+            if int(settings.bot_sample_rate) == 16000 and hasattr(service.stt, "open_live"):
+                live = service.stt.open_live(sample_rate=settings.bot_sample_rate)
             utterance, reason = capture.capture_utterance(
                 mic,
                 wait_for_speech=True,
                 idle_timeout_ms=settings.bot_end_call_ms,
+                live=live,
             )
             mic.stop()
 
@@ -215,27 +242,36 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
                 bye = "Chau, acá estoy cuando me necesites."
                 character = service.characters.get_by_id(conversation.character_id)
                 if character:
-                    t_tts = time.perf_counter()
-                    bye_audio = await service.tts.synthesize(bye, character.voice_id)
-                    logger.info(
-                        "Tiempos STT=- LLM=- TTS=%sms (despedida)",
-                        int((time.perf_counter() - t_tts) * 1000),
-                    )
                     logger.info("Estado=talking (bye)")
-                    _speak(settings, mic, bye_audio)
+                    await _speak_text(
+                        settings, mic, service.tts, bye, character.voice_id, "despedida"
+                    )
                 break
 
-            logger.info("Estado=thinking")
-            result = await service.process_audio(conversation.id, utterance)
-            user_text = result.get("user_text") or ""
-            assistant_text = result.get("assistant_text") or ""
-            logger.info("User: %s", user_text)
-            logger.info("TORI: %s", assistant_text)
+            known_text = None
+            stt_ms = None
+            if live is not None and live.consumed and not live.failed and live.transcript.strip():
+                known_text = live.transcript.strip()
+                stt_ms = live.flush_ms
+            elif live is not None and live.failed:
+                logger.warning("STT streaming no disponible, transcribo el audio completo")
 
+            logger.info("Estado=thinking")
+            player = StreamPlayer(_tts_ext(settings))
+            result = await service.process_audio(
+                conversation.id,
+                utterance,
+                user_text=known_text,
+                stt_ms=stt_ms,
+                player=player,
+            )
             audio_bytes = result.get("audio_bytes") or b""
-            if audio_bytes:
+            if audio_bytes and not player.played:
                 logger.info("Estado=talking")
                 _speak(settings, mic, audio_bytes)
+            elif player.played:
+                logger.info("Estado=talking")
+                _pause_after_tts(settings)
 
             action = result.get("action")
             if action:

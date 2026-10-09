@@ -21,6 +21,7 @@ from app.repositories.action_repository import ActionRepository
 from app.repositories.character_repository import CharacterRepository
 from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.user_repository import UserRepository
+from app.bot.playback import StreamPlayer, consume_tts
 from app.services.actions import run_llm_action
 from app.services.audio_service import AudioService
 
@@ -140,6 +141,7 @@ class ConversationService:
         user: User,
         character_id: str | None = None,
         device_id: str | None = None,
+        player: StreamPlayer | None = None,
     ) -> tuple[Conversation, bytes, str]:
         # El personaje sale de la base: user.character_id (o override explícito).
         cid = (character_id or user.character_id or "").strip()
@@ -181,13 +183,16 @@ class ConversationService:
             greeting = self.settings.bot_greeting.strip() or "Hola"
             intro_text = f"{greeting}{', ' + name if name else ''}. ¿En qué te ayudo?"
 
-        t_tts = time.perf_counter()
-        audio_content = await self.tts.synthesize(intro_text, character.voice_id)
-        intro_latency["tts_ms"] = int((time.perf_counter() - t_tts) * 1000)
+        audio_content, ttfb_ms, tts_ms = await consume_tts(
+            self.tts, intro_text, character.voice_id, player
+        )
+        intro_latency["tts_ttfb_ms"] = ttfb_ms
+        intro_latency["tts_ms"] = tts_ms
         logger.info(
-            "Tiempos STT=- LLM=%s TTS=%s (intro)",
+            "Tiempos STT=- LLM=%s TTS=%s primer byte (total %s) (intro)",
             _ms(intro_latency.get("llm_ms")),
-            _ms(intro_latency.get("tts_ms")),
+            _ms(ttfb_ms),
+            _ms(tts_ms),
         )
         audio_path = await self.audio.save_audio(
             audio_content, extension=self._tts_extension()
@@ -206,6 +211,10 @@ class ConversationService:
         self,
         conversation_id: str,
         audio_bytes: bytes,
+        *,
+        user_text: str | None = None,
+        stt_ms: int | None = None,
+        player: StreamPlayer | None = None,
     ) -> dict[str, Any]:
         conversation = self.conversations.get_by_id(conversation_id)
         if not conversation:
@@ -218,11 +227,15 @@ class ConversationService:
         user = self.users.get_by_id(conversation.user_id)
         latency: dict[str, Any] = {}
 
-        t0 = time.perf_counter()
-        user_text = await self.stt.transcribe(
-            audio_bytes, language=self.settings.stt_language
-        )
-        latency["stt_ms"] = int((time.perf_counter() - t0) * 1000)
+        if user_text is None:
+            t0 = time.perf_counter()
+            user_text = await self.stt.transcribe(
+                audio_bytes, language=self.settings.stt_language
+            )
+            latency["stt_ms"] = int((time.perf_counter() - t0) * 1000)
+        else:
+            latency["stt_ms"] = stt_ms or 0
+            latency["stt_stream"] = True
         if not user_text:
             logger.info(
                 "Tiempos STT=%s LLM=- TTS=-",
@@ -271,11 +284,17 @@ class ConversationService:
         if not assistant_text.strip():
             assistant_text = "Dale."
 
-        t2 = time.perf_counter()
-        audio_content = await self.tts.synthesize(assistant_text, character.voice_id)
-        latency["tts_ms"] = int((time.perf_counter() - t2) * 1000)
-        latency["total_ms"] = sum(
-            v for k, v in latency.items() if k.endswith("_ms") and isinstance(v, int)
+        logger.info("User: %s", user_text)
+        logger.info("TORI: %s", assistant_text)
+        audio_content, ttfb_ms, tts_ms = await consume_tts(
+            self.tts, assistant_text, character.voice_id, player
+        )
+        latency["tts_ttfb_ms"] = ttfb_ms
+        latency["tts_ms"] = tts_ms
+        latency["total_ms"] = (
+            int(latency.get("stt_ms") or 0)
+            + int(latency.get("llm_ms") or 0)
+            + tts_ms
         )
 
         audio_path = await self.audio.save_audio(
@@ -292,9 +311,11 @@ class ConversationService:
         )
 
         logger.info(
-            "Tiempos STT=%s LLM=%s TTS=%s",
+            "Tiempos STT=%s%s LLM=%s TTS=%s primer byte (total %s)",
             _ms(latency.get("stt_ms")),
+            " stream" if latency.get("stt_stream") else "",
             _ms(latency.get("llm_ms")),
+            _ms(latency.get("tts_ttfb_ms")),
             _ms(latency.get("tts_ms")),
         )
 

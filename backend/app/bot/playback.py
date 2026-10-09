@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import logging
+import shutil
+import subprocess
 import time
 import wave
 from collections import deque
@@ -110,6 +112,7 @@ class MicStream:
         self._q: deque[np.ndarray] = deque()
         self._stream = None
         self._sd = _sounddevice()
+        self._last_block_at = 0.0
 
     @property
     def is_active(self) -> bool:
@@ -121,6 +124,7 @@ class MicStream:
         # Quitar DC del bloque (el device llega con offset ~-1.7 y picos >|1|).
         x = x - np.mean(x)
         pcm = np.clip(x * self.input_gain * 32767.0, -32768, 32767).astype(np.int16)
+        self._last_block_at = time.monotonic()
         self._q.append(pcm)
 
     def clear(self) -> None:
@@ -137,6 +141,7 @@ class MicStream:
             blocksize=self.block_size,
             callback=self._callback,
         )
+        self._last_block_at = 0.0
         self._stream.start()
         logger.debug("Mic ON")
 
@@ -150,6 +155,12 @@ class MicStream:
             self._stream = None
             self.clear()
             logger.debug("Mic OFF")
+
+    def reopen(self) -> None:
+        """Vuelve a abrir el input. ffplay a veces deja el dispositivo mudo."""
+        logger.warning("Mic sin audio, reabro el input")
+        self.stop()
+        self.start()
 
     def read_block(self, timeout: float = 1.0) -> np.ndarray | None:
         if self._stream is None:
@@ -174,6 +185,100 @@ def begin_listening(mic: MicStream, settle_ms: int = 450) -> None:
     if settle_ms > 0:
         time.sleep(settle_ms / 1000.0)
         mic.clear()
+    if mic.is_active and (
+        mic._last_block_at == 0.0 or time.monotonic() - mic._last_block_at > 1.0
+    ):
+        mic.reopen()
+        mic.clear()
+
+
+class StreamPlayer:
+    """Reproduce TTS apenas llega audio. Si no hay ffplay, junta el archivo y lo toca al final."""
+
+    def __init__(self, extension: str = "mp3") -> None:
+        self.extension = extension
+        self.played = False
+        self._proc: subprocess.Popen | None = None
+        self._fallback = bytearray()
+
+    def start(self) -> None:
+        if self._proc is not None or shutil.which("ffplay") is None:
+            return
+        self._proc = subprocess.Popen(
+            [
+                "ffplay",
+                "-nodisp",
+                "-autoexit",
+                "-loglevel",
+                "quiet",
+                "-fflags",
+                "nobuffer",
+                "-flags",
+                "low_delay",
+                "-probesize",
+                "32768",
+                "-analyzeduration",
+                "0",
+                "-i",
+                "pipe:0",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def write(self, chunk: bytes) -> None:
+        if self._proc is not None and self._proc.stdin is not None:
+            try:
+                self._proc.stdin.write(chunk)
+                self._proc.stdin.flush()
+                return
+            except BrokenPipeError:
+                self._proc = None
+        self._fallback.extend(chunk)
+
+    def finish(self) -> None:
+        if self._proc is not None and self._proc.stdin is not None:
+            try:
+                self._proc.stdin.close()
+            except BrokenPipeError:
+                pass
+            self._proc.wait()
+            self._proc = None
+            self.played = True
+            return
+        if self._fallback:
+            play_audio_bytes(bytes(self._fallback), extension=self.extension)
+            self._fallback.clear()
+            self.played = True
+
+
+async def consume_tts(tts, text: str, voice_id: str, player: StreamPlayer | None):
+    """Lee el TTS por chunks. Devuelve (audio, ttfb_ms, download_ms).
+
+    Con un proveedor que streamea, el player arranca en el primer chunk.
+    `download_ms` no incluye lo que tarda en terminar de sonar.
+    """
+    parts: list[bytes] = []
+    t0 = time.perf_counter()
+    ttfb_ms = 0
+    started = False
+    stream = bool(getattr(tts, "streams_audio", False))
+    async for chunk in tts.iter_audio(text, voice_id):
+        if not chunk:
+            continue
+        if not started:
+            ttfb_ms = int((time.perf_counter() - t0) * 1000)
+            started = True
+            if player is not None and stream:
+                player.start()
+        parts.append(chunk)
+        if player is not None:
+            player.write(chunk)
+    download_ms = int((time.perf_counter() - t0) * 1000) if started else 0
+    if player is not None:
+        player.finish()
+    return b"".join(parts), ttfb_ms, download_ms
 
 
 def speak(

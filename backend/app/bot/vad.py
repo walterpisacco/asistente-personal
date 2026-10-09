@@ -19,6 +19,16 @@ class KeywordSpotter(Protocol):
     def accept(self, pcm: np.ndarray) -> bool: ...
 
 
+class LiveTranscriber(Protocol):
+    def start(self) -> None: ...
+
+    def push(self, pcm: np.ndarray) -> None: ...
+
+    def finish(self) -> str: ...
+
+    def abort(self) -> None: ...
+
+
 class UtteranceCapture:
     def __init__(
         self,
@@ -50,10 +60,14 @@ class UtteranceCapture:
         *,
         wait_for_speech: bool = True,
         idle_timeout_ms: int | None = None,
+        live: LiveTranscriber | None = None,
     ) -> tuple[bytes | None, str]:
         """
         Captura una frase. Retorna (wav_bytes|None, reason).
         reason: speech | silence_timeout | max_utterance | idle_end_call
+
+        Si `live` está, el PCM se manda al STT mientras se habla y se cierra
+        al detectar el silencio.
         """
         preroll: deque[np.ndarray] = deque(maxlen=self._preroll_blocks())
         frames: list[np.ndarray] = []
@@ -63,57 +77,107 @@ class UtteranceCapture:
         utterance_ms = 0
         idle_ms = 0
         idle_limit = idle_timeout_ms
+        live_open = False
 
-        while True:
-            block = mic.read_block(timeout=1.0)
-            if block is None:
-                continue
-            energy = rms_energy(block)
-            is_voice = energy >= self.vad_energy
+        def _close_live() -> None:
+            nonlocal live_open
+            if live is not None and live_open:
+                live.finish()
+                live_open = False
 
-            if not speaking:
-                preroll.append(block)
-                if wait_for_speech and not is_voice:
-                    idle_ms += self.block_ms
-                    if idle_limit is not None and idle_ms >= idle_limit:
-                        return None, "idle_end_call"
+        def _drop_live() -> None:
+            nonlocal live_open
+            if live is not None and live_open:
+                live.abort()
+                live_open = False
+
+        stalls = 0
+        try:
+            while True:
+                block = mic.read_block(timeout=1.0)
+                if block is None:
+                    # Sin bloques el silencio no avanza y el turno queda colgado.
+                    stalls += 1
+                    if stalls == 1:
+                        mic.reopen()
+                    if speaking:
+                        silence_ms += 1000
+                        utterance_ms += 1000
+                    else:
+                        idle_ms += 1000
+                        if idle_limit is not None and idle_ms >= idle_limit:
+                            return None, "idle_end_call"
+                        continue
+                    if utterance_ms >= self.max_utterance_ms:
+                        _close_live()
+                        if not frames:
+                            return None, "max_utterance"
+                        wav = pcm16_to_wav_bytes(np.concatenate(frames), self.sample_rate)
+                        return wav, "max_utterance"
+                    if speech_ms >= self.min_speech_ms and silence_ms >= self.silence_ms:
+                        _close_live()
+                        wav = pcm16_to_wav_bytes(np.concatenate(frames), self.sample_rate)
+                        return wav, "speech"
                     continue
-                if is_voice or not wait_for_speech:
-                    speaking = True
-                    frames.extend(list(preroll))
-                    preroll.clear()
-                    speech_ms = self.block_ms if is_voice else 0
-                    silence_ms = 0 if is_voice else self.block_ms
-                    utterance_ms = len(frames) * self.block_ms
-                    continue
+                stalls = 0
+                energy = rms_energy(block)
+                is_voice = energy >= self.vad_energy
 
-            frames.append(block)
-            utterance_ms += self.block_ms
-            if is_voice:
-                speech_ms += self.block_ms
-                silence_ms = 0
-            else:
-                silence_ms += self.block_ms
+                if not speaking:
+                    preroll.append(block)
+                    if wait_for_speech and not is_voice:
+                        idle_ms += self.block_ms
+                        if idle_limit is not None and idle_ms >= idle_limit:
+                            return None, "idle_end_call"
+                        continue
+                    if is_voice or not wait_for_speech:
+                        speaking = True
+                        frames.extend(list(preroll))
+                        preroll.clear()
+                        if live is not None:
+                            live.start()
+                            live_open = True
+                            for frame in frames:
+                                live.push(frame)
+                        speech_ms = self.block_ms if is_voice else 0
+                        silence_ms = 0 if is_voice else self.block_ms
+                        utterance_ms = len(frames) * self.block_ms
+                        continue
 
-            if utterance_ms >= self.max_utterance_ms:
-                wav = pcm16_to_wav_bytes(np.concatenate(frames), self.sample_rate)
-                return wav, "max_utterance"
+                frames.append(block)
+                if live_open and live is not None:
+                    live.push(block)
+                utterance_ms += self.block_ms
+                if is_voice:
+                    speech_ms += self.block_ms
+                    silence_ms = 0
+                else:
+                    silence_ms += self.block_ms
 
-            if (
-                speech_ms >= self.min_speech_ms
-                and silence_ms >= self.silence_ms
-            ):
-                wav = pcm16_to_wav_bytes(np.concatenate(frames), self.sample_rate)
-                return wav, "speech"
+                if utterance_ms >= self.max_utterance_ms:
+                    _close_live()
+                    wav = pcm16_to_wav_bytes(np.concatenate(frames), self.sample_rate)
+                    return wav, "max_utterance"
 
-            if speech_ms < self.min_speech_ms and silence_ms >= self.silence_ms * 2:
-                # Ruido corto: reset
-                speaking = False
-                frames.clear()
-                speech_ms = 0
-                silence_ms = 0
-                utterance_ms = 0
-                idle_ms = 0
+                if (
+                    speech_ms >= self.min_speech_ms
+                    and silence_ms >= self.silence_ms
+                ):
+                    _close_live()
+                    wav = pcm16_to_wav_bytes(np.concatenate(frames), self.sample_rate)
+                    return wav, "speech"
+
+                if speech_ms < self.min_speech_ms and silence_ms >= self.silence_ms * 2:
+                    # Ruido corto: reset
+                    _drop_live()
+                    speaking = False
+                    frames.clear()
+                    speech_ms = 0
+                    silence_ms = 0
+                    utterance_ms = 0
+                    idle_ms = 0
+        finally:
+            _drop_live()
 
     def capture_wake_window(
         self,
