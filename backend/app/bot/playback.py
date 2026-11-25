@@ -296,3 +296,72 @@ def speak(
 
     if post_tts_delay_ms > 0:
         time.sleep(post_tts_delay_ms / 1000.0)
+
+
+class PcmStreamPlayer:
+    """Reproduce PCM16 mono en streaming (Realtime / sounddevice)."""
+
+    INTERRUPT = b"\x00INTERRUPT"
+
+    def __init__(self, sample_rate: int = 24000) -> None:
+        self.sample_rate = int(sample_rate)
+        self.played = False
+        self._sd = _sounddevice()
+        self._stream = None
+        self._buffer = bytearray()
+
+    def start(self) -> None:
+        if self._stream is not None:
+            return
+        self._stream = self._sd.RawOutputStream(
+            samplerate=self.sample_rate,
+            channels=1,
+            dtype="int16",
+            blocksize=0,
+        )
+        self._stream.start()
+
+    def write(self, chunk: bytes) -> None:
+        if not chunk or chunk == self.INTERRUPT:
+            return
+        if self._stream is None:
+            self.start()
+        assert self._stream is not None
+        # Completar frames de 2 bytes.
+        self._buffer.extend(chunk)
+        n = len(self._buffer) - (len(self._buffer) % 2)
+        if n <= 0:
+            return
+        frame = bytes(self._buffer[:n])
+        del self._buffer[:n]
+        self._stream.write(frame)
+        self.played = True
+
+    def interrupt(self) -> None:
+        self._buffer.clear()
+        if self._stream is None:
+            return
+        try:
+            self._stream.stop()
+            self._stream.close()
+        except Exception:
+            pass
+        self._stream = None
+
+    def finish(self) -> None:
+        if self._buffer and self._stream is not None:
+            # Pad último byte suelto
+            if len(self._buffer) % 2:
+                self._buffer.append(0)
+            try:
+                self._stream.write(bytes(self._buffer))
+            except Exception:
+                pass
+            self._buffer.clear()
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception:
+                pass
+            self._stream = None

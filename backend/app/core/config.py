@@ -102,6 +102,13 @@ class Settings(BaseSettings):
     openai_timeout: int = 60
     intent_timeout_seconds: float = 8.0
 
+    # pipeline = STT→LLM→TTS | realtime = OpenAI Realtime speech-to-speech
+    conversation_mode: str = "realtime"
+    openai_realtime_model: str = "gpt-realtime-2.1"
+    openai_realtime_voice: str = "marin"
+    openai_realtime_transcription_model: str = "gpt-4o-mini-transcribe"
+    openai_realtime_sample_rate: int = 24000
+
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "gemma3:4b"
     ollama_timeout: int = 120

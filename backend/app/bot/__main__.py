@@ -1,13 +1,11 @@
 """Loop principal del bot TORI: conversación por turnos (mic ↔ TTS exclusivos).
 
-Patrón como etiquetas-ia mobile:
-  login → listening → (mic ON) captura
-  thinking  → (mic OFF) STT/LLM/TTS
-  talking   → (mic OFF) reproduce
-  listening → reopen mic + settle
+Patrón:
+  login → wake «hola» → conversación → idle
 
-El usuario se autentica con usuario/contraseña (misma API que mobile/web).
-La wake word solo activa la charla («hola»), ya no identifica a la persona.
+Modos (`CONVERSATION_MODE`):
+  - realtime: OpenAI Realtime (gpt-realtime-2.1) speech-to-speech
+  - pipeline: STT → LLM → TTS clásico
 """
 
 from __future__ import annotations
@@ -24,7 +22,15 @@ if str(_BACKEND) not in sys.path:
 
 from app.bot.kws import create_wake_spotter
 from app.bot.login_gate import load_user_from_session, wait_for_login
-from app.bot.playback import MicStream, StreamPlayer, begin_listening, consume_tts, speak
+from app.bot.proyect_context import get_selected_proyect_id, resolve_proyect_id_for_user
+from app.bot.playback import (
+    MicStream,
+    PcmStreamPlayer,
+    StreamPlayer,
+    begin_listening,
+    consume_tts,
+    speak,
+)
 from app.bot.vad import UtteranceCapture
 from app.bot.video_player import is_showing_video, return_to_idle, show_idle
 from app.core.config import get_settings
@@ -32,6 +38,7 @@ from app.core.database import SessionLocal
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
 from app.services.conversation_service import ConversationService
+from app.services.realtime_conversation import RealtimeVoiceSession
 
 logging.basicConfig(
     level=logging.INFO,
@@ -85,10 +92,18 @@ def _session_user(db) -> User | None:
     return UserRepository(db).get_by_id(cached.id)
 
 
+def _is_realtime(settings) -> bool:
+    return (settings.conversation_mode or "realtime").strip().lower() == "realtime"
+
+
 async def run_bot() -> None:
     settings = get_settings()
     if not settings.bot_enabled:
         logger.error("BOT_ENABLED=false")
+        return
+
+    if _is_realtime(settings) and not (settings.openai_api_key or "").strip():
+        logger.error("CONVERSATION_MODE=realtime requiere OPENAI_API_KEY")
         return
 
     user = wait_for_login(settings)
@@ -114,11 +129,12 @@ async def run_bot() -> None:
         show_idle()
     except Exception as exc:  # noqa: BLE001
         logger.warning("No se pudo abrir la ventana de inicio: %s", exc)
+    mode = "realtime" if _is_realtime(settings) else "pipeline"
     logger.info(
-        "TORI listo. Usuario=%s wake=sesión silence=%sms end_call=%sms",
+        "TORI listo. Usuario=%s mode=%s model=%s wake=sesión",
         user.username,
-        settings.bot_silence_ms,
-        settings.bot_end_call_ms,
+        mode,
+        settings.openai_realtime_model if mode == "realtime" else settings.openai_model,
     )
 
     with MicStream(
@@ -158,6 +174,167 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
             logger.warning("Frase %r no activa la sesión.", spotter.last_keyword)
         return
 
+    if _is_realtime(settings):
+        await _realtime_session(mic, capture, settings, spotter)
+    else:
+        await _pipeline_session(mic, capture, settings, spotter)
+
+
+async def _realtime_session(mic: MicStream, capture: UtteranceCapture, settings, spotter) -> None:
+    db = SessionLocal()
+    session: RealtimeVoiceSession | None = None
+    player = PcmStreamPlayer(sample_rate=int(settings.openai_realtime_sample_rate or 24000))
+    try:
+        user = _session_user(db)
+        if user is None:
+            logger.error("No hay sesión de usuario; volvé a iniciar el bot para loguearte")
+            return
+
+        logger.info(
+            "Realtime user=%s (%s) model=%s tx=%s",
+            user.id,
+            user.full_name or user.username,
+            settings.openai_realtime_model,
+            settings.openai_realtime_transcription_model,
+        )
+        session = RealtimeVoiceSession(db, settings)
+        conversation = await session.start(user)
+        logger.info("Conversación realtime %s", conversation.id)
+
+        local_playing = False
+
+        async def play_out() -> None:
+            nonlocal local_playing
+            async for chunk in session.audio_chunks():
+                if chunk is None:
+                    local_playing = False
+                    break
+                if chunk == PcmStreamPlayer.INTERRUPT:
+                    player.interrupt()
+                    local_playing = False
+                    continue
+                if chunk == b"":
+                    # Cola de red vacía; dejá que el device termine de sonar un poco.
+                    await asyncio.sleep(0.12)
+                    local_playing = False
+                    continue
+                local_playing = True
+                player.write(chunk)
+
+        play_task = asyncio.create_task(play_out(), name="realtime-play")
+        # Half-duplex: mic cerrado al inicio (saludo) hasta que deje de hablar.
+        mic_open = False
+        was_playing = False
+
+        try:
+            while not session.ended:
+                # Cubre tanto el flag del modelo como el audio aún en el parlante.
+                playing = session.is_playing or local_playing
+
+                # Transición a "talking": cortar mic y limpiar buffer remoto (anti-eco).
+                if playing and not was_playing:
+                    if mic_open:
+                        mic.stop()
+                        mic_open = False
+                    await session.clear_input()
+                    logger.info("Estado=talking (mic OFF, anti-eco)")
+
+                # Transición a "listening": esperar eco residual y reabrir mic.
+                if (not playing) and was_playing:
+                    delay_ms = max(
+                        int(settings.bot_post_tts_delay_ms or 0),
+                        int(settings.bot_mic_settle_ms or 0),
+                        500,
+                    )
+                    if delay_ms > 0:
+                        await asyncio.sleep(delay_ms / 1000.0)
+                    await session.clear_input()
+                    _listen(settings, mic)
+                    mic_open = True
+                    logger.info("Estado=listening (mic ON tras settle %sms)", delay_ms)
+
+                was_playing = playing
+
+                if is_showing_video():
+                    if mic_open:
+                        mic.stop()
+                        mic_open = False
+                    logger.info(
+                        "Estado=listening (video: wake o «detener video», sin Realtime)…"
+                    )
+                    _listen(settings, mic)
+                    mic_open = True
+                    capture.listen_for_wake(
+                        mic,
+                        spotter,
+                        trailing_ms=settings.bot_kws_trailing_ms,
+                        max_phrase_ms=settings.bot_wake_window_ms,
+                        trace=bool(getattr(settings, "bot_wake_trace", False)),
+                    )
+                    mic.stop()
+                    mic_open = False
+                    command = spotter.matched_command()
+                    if command == "detener_video":
+                        logger.info("KWS detener_video → paro reproducción")
+                        return_to_idle()
+                        was_playing = False
+                        continue
+                    if spotter.matched_session_wake() or spotter.matched_username():
+                        logger.info("Wake durante video → retomo Realtime")
+                        was_playing = False
+                        continue
+                    was_playing = False
+                    continue
+
+                # Solo mandar audio al modelo cuando el parlante está en silencio.
+                if not playing:
+                    if not mic_open:
+                        _listen(settings, mic)
+                        mic_open = True
+                    block = await asyncio.to_thread(mic.read_block, 0.35)
+                    if block is not None and block.size:
+                        await session.send_mic_pcm(
+                            block, src_rate=int(settings.bot_sample_rate)
+                        )
+                else:
+                    await asyncio.sleep(0.02)
+
+                action = session.take_action()
+                if action:
+                    logger.info("Action realtime: %s", action)
+                    if action.get("end_session"):
+                        logger.info("Acción finalizar → cierro Realtime")
+                        break
+
+                if (not playing) and session.idle_timed_out(settings.bot_end_call_ms):
+                    logger.info("Fin Realtime por silencio prolongado")
+                    break
+        finally:
+            mic.stop()
+            session.end()
+            await session.close()
+            player.finish()
+            play_task.cancel()
+            try:
+                await play_task
+            except asyncio.CancelledError:
+                pass
+            if is_showing_video():
+                return_to_idle()
+            _pause_after_tts(settings)
+    except Exception:
+        logger.exception("Error en sesión Realtime")
+        if session is not None:
+            try:
+                await session.close()
+            except Exception:
+                pass
+    finally:
+        mic.stop()
+        db.close()
+
+
+async def _pipeline_session(mic: MicStream, capture: UtteranceCapture, settings, spotter) -> None:
     db = SessionLocal()
     try:
         user = _session_user(db)
@@ -183,7 +360,6 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
 
         while True:
             if is_showing_video():
-                # Sin STT/LLM: solo wake (retomar charla) o detener video.
                 logger.info(
                     "Estado=listening (video: wake o «detener video», sin STT)…"
                 )
@@ -260,12 +436,15 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
 
             logger.info("Estado=thinking")
             player = StreamPlayer(_tts_ext(settings))
+            focus_proyect = resolve_proyect_id_for_user(db, user)
+            logger.info("proyect_id=%s (UI=%s)", focus_proyect, get_selected_proyect_id())
             result = await service.process_audio_local(
                 conversation.id,
                 utterance,
                 user_text=known_text,
                 stt_ms=stt_ms,
                 player=player,
+                proyect_id=focus_proyect,
             )
             audio_bytes = result.get("audio_bytes") or b""
             if audio_bytes and not player.played:

@@ -23,6 +23,7 @@ from app.services.actions import (
     extract_add_task_parts,
     extract_delete_project_name,
     extract_delete_task_name,
+    extract_select_project_name,
     looks_like_timed_reminder,
     pending_add_task_query,
     pending_delete_messages_query,
@@ -37,6 +38,7 @@ from app.services.actions import (
     wants_delete_task,
     wants_list_projects,
     wants_list_tasks,
+    wants_select_project,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,6 +63,7 @@ Reglas:
 - eliminar_tarea: quiere borrar una tarea del proyecto seleccionado. valor = nombre de la tarea. Si no dijo el nombre, valor="". confirm=true/false solo si confirma o cancela un borrado ya propuesto.
 - listar_proyectos: quiere ver sus proyectos. valor="".
 - agregar_proyecto: quiere crear un proyecto. valor = nombre del proyecto.
+- seleccionar_proyecto: quiere cambiar el proyecto activo (UI/foco). valor = nombre del proyecto. Ej: "seleccioná el proyecto cocina".
 - eliminar_proyecto: borrar un proyecto del usuario logueado (no del proyecto seleccionado). valor = nombre del proyecto. Si no dijo el nombre, valor="". confirm=true/false solo si confirma o cancela un borrado ya propuesto. Hay que avisar que también se borran tareas y conversaciones.
 - eliminar_mensajes: borrar TODOS los mensajes del proyecto seleccionado (chat/conversación/historial). valor="". El backend usa el proyect_id del turno. No preguntar el proyecto. confirm=true/false solo si confirma o cancela un borrado ya propuesto. El borrado es físico.
 - agregar_recordatorio: del usuario, no del proyecto. valor = texto a recordar (sin fecha ni recurrencia). La HORA es OBLIGATORIA siempre; si falta la hora, clave="none" (que el asistente pregunte).
@@ -307,6 +310,12 @@ def classify_with_regex(
     pending_del_msgs = pending_delete_messages_query(db, user, user_text)
     if wants_list_projects(user_text):
         return IntentDecision(clave="listar_proyectos", source="regex")
+    if wants_select_project(user_text):
+        return IntentDecision(
+            clave="seleccionar_proyecto",
+            valor=extract_select_project_name(user_text),
+            source="regex",
+        )
     if wants_delete_messages(user_text) or pending_del_msgs:
         confirm = (
             delete_messages_pending_confirm(user, user_text)

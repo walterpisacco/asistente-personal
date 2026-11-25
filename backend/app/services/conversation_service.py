@@ -39,6 +39,7 @@ from app.services.actions import (
     extract_add_task_parts,
     extract_delete_project_name,
     extract_delete_task_name,
+    extract_select_project_name,
     pending_intent_context,
     run_llm_action,
 )
@@ -452,6 +453,8 @@ class ConversationService:
                 valor = extract_delete_task_name(user_text)
             if decision.clave == "agregar_proyecto" and not valor:
                 valor = extract_add_project_name(user_text)
+            if decision.clave == "seleccionar_proyecto" and not valor:
+                valor = extract_select_project_name(user_text)
             if decision.clave == "eliminar_proyecto" and not valor:
                 valor = extract_delete_project_name(user_text)
             if decision.clave == "agregar_recordatorio" and not valor:
@@ -514,6 +517,7 @@ class ConversationService:
             and extra.get("proyect_id") is not None
             and (
                 action_result.metodo == "agregar_proyecto"
+                or action_result.metodo == "seleccionar_proyecto"
                 or (
                     action_result.metodo == "eliminar_proyecto"
                     and extra.get("deleted")
@@ -747,7 +751,9 @@ class ConversationService:
         )
         proyect_id = None
         try:
-            proyect_id = self._resolve_proyect_id(user)
+            from app.bot.proyect_context import resolve_proyect_id_for_user
+
+            proyect_id = resolve_proyect_id_for_user(self.db, user)
         except Exception:
             logger.debug("Sin proyecto default al iniciar conversación bot", exc_info=True)
         self.conversations.add_message(
@@ -769,9 +775,11 @@ class ConversationService:
         user_text: str | None = None,
         stt_ms: int | None = None,
         player=None,
+        proyect_id: int | None = None,
     ) -> dict[str, Any]:
         """Flujo local del bot: STT/LLM/acciones + audio completo en memoria."""
         from app.bot.playback import consume_tts
+        from app.bot.proyect_context import resolve_proyect_id_for_user
 
         conversation = self.conversations.get_by_id(conversation_id)
         if not conversation:
@@ -808,11 +816,14 @@ class ConversationService:
                 "action": None,
             }
 
-        proyect_id = None
         try:
-            proyect_id = self._resolve_proyect_id(user)
+            if proyect_id is not None:
+                proyect_id = self._resolve_proyect_id(user, proyect_id)
+            else:
+                proyect_id = resolve_proyect_id_for_user(self.db, user)
         except Exception:
             logger.debug("Sin proyecto en turno bot", exc_info=True)
+            proyect_id = None
 
         self.conversations.add_message(
             ConversationMessage(

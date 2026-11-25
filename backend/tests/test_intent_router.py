@@ -116,6 +116,18 @@ def test_regex_fallback_delete_project():
     assert "mi casa" in decision.valor.lower()
 
 
+def test_regex_fallback_select_project():
+    decision = classify_with_regex("Seleccioná el proyecto cocina")
+    assert decision.clave == "seleccionar_proyecto"
+    assert "cocina" in decision.valor.lower()
+    decision = classify_with_regex("Cambiá al proyecto mi casa")
+    assert decision.clave == "seleccionar_proyecto"
+    assert "mi casa" in decision.valor.lower()
+    # No confundir con listar / borrar / agregar
+    assert classify_with_regex("Mostrá los proyectos").clave != "seleccionar_proyecto"
+    assert classify_with_regex("Borrá el proyecto cocina").clave != "seleccionar_proyecto"
+
+
 def test_regex_fallback_delete_task():
     decision = classify_with_regex(
         "Borrá la tarea comprar pan",

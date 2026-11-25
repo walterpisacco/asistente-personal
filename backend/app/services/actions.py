@@ -403,6 +403,50 @@ def extract_delete_project_name(user_text: str) -> str:
     return _clean_project_name(match.group(1) or "")
 
 
+_SELECT_PROJECT_VERB = (
+    r"(?:seleccion(?:arlo|arla|ame|ás|as|á|a|ar)|"
+    r"eleg(?:irlo|irla|ime|ís|is|í|i|ir)|"
+    r"cambi(?:arlo|arla|ame|ás|as|á|a|ar)|"
+    r"pas(?:arlo|arla|ame|ás|as|á|a|ar)|"
+    r"activ(?:arlo|arla|ame|ás|as|á|a|ar)|"
+    r"pon(?:erlo|erla|eme|és|es|é|e|er))"
+)
+
+_SELECT_PROJECT_INTENT_RE = re.compile(
+    rf"(?i)\b{_SELECT_PROJECT_VERB}\b.*\bproyectos?\b"
+    r"|\bproyectos?\b.*\b(?:seleccion|eleg[ií]|cambi[aá]|pas[aá]|activ)"
+)
+
+_SELECT_PROJECT_RE = re.compile(
+    rf"(?i)\b{_SELECT_PROJECT_VERB}\b"
+    r".*\bproyectos?\b(?:\s+(?:llamad[oa]|que\s+se\s+llame))?\s*[:\-]?\s*(.*)$"
+)
+
+
+def extract_select_project_name(user_text: str) -> str:
+    """Saca el nombre de frases tipo 'seleccioná el proyecto mi casa'."""
+    text = (user_text or "").strip()
+    if not text:
+        return ""
+    match = _SELECT_PROJECT_RE.search(text)
+    if not match:
+        return ""
+    return _clean_project_name(match.group(1) or "")
+
+
+def wants_select_project(user_text: str) -> bool:
+    text = (user_text or "").strip()
+    if not text:
+        return False
+    if wants_delete_project(text):
+        return False
+    if wants_list_projects(text):
+        return False
+    if re.search(r"(?i)\b(?:agreg|cre|añad|nueva).*\bproyectos?\b", text):
+        return False
+    return bool(_SELECT_PROJECT_INTENT_RE.search(text))
+
+
 def wants_delete_project(user_text: str) -> bool:
     text = (user_text or "").strip()
     if not text:
@@ -1501,6 +1545,8 @@ class ActionDispatcher:
             "agregar_recordatorio": self._agregar_recordatorio,
             "recordatory": self._agregar_recordatorio,
             "agregar_proyecto": self._agregar_proyecto,
+            "seleccionar_proyecto": self._seleccionar_proyecto,
+            "seleccionar_proyectos": self._seleccionar_proyecto,
             "eliminar_proyecto": self._eliminar_proyecto,
             "eliminar_proyectos": self._eliminar_proyecto,
             "agregar_tarea": self._agregar_tarea,
@@ -1911,6 +1957,107 @@ class ActionDispatcher:
                 "scheduled_at": scheduled_at.isoformat(sep=" "),
                 "recurrence": RECURRENCE_ONCE,
                 "time_of_day": time_of_day,
+            },
+        )
+
+    async def _seleccionar_proyecto(
+        self,
+        *,
+        valor: str,
+        user: Optional[User],
+        user_text: str,
+        row_clave: str,
+        fecha: str | None = None,
+        confirm: bool | None = None,
+        valor1: str | None = None,
+    ) -> ActionResult:
+        from app.bot.proyect_context import set_selected_proyect_id
+
+        if user is None:
+            return ActionResult(
+                action=row_clave,
+                metodo="seleccionar_proyecto",
+                valor=valor,
+                spoken_override="No puedo cambiar de proyecto sin saber quién sos.",
+                extra={"error": "no_user"},
+            )
+
+        user_id = int(user.id)
+        name = (
+            _clean_project_name(valor)
+            or extract_select_project_name(user_text)
+            or _clean_project_name(valor1 or "")
+        )
+        if not name:
+            return ActionResult(
+                action=row_clave,
+                metodo="seleccionar_proyecto",
+                valor=valor,
+                spoken_override="¿Qué proyecto querés seleccionar?",
+                extra={"error": "missing_name", "needs_project": True},
+            )
+
+        matches = self._resolve_project_ref(user_id, name)
+        if not matches:
+            projects = ProyectsRepository(self.db).list_for_user(user_id)
+            matches = _match_projects(projects, name)
+
+        if not matches:
+            return ActionResult(
+                action=row_clave,
+                metodo="seleccionar_proyecto",
+                valor=name,
+                spoken_override=f"No encontré un proyecto que se llame {name}.",
+                extra={"error": "not_found", "items": []},
+            )
+
+        if len(matches) > 1:
+            items = [
+                {"id": row.id, "name": row.name}
+                for row in matches
+                if (row.name or "").strip()
+            ]
+            spoken = (
+                "Encontré varios proyectos parecidos. "
+                "¿Cuál querés: "
+                + ", ".join(item["name"] for item in items)
+                + "?"
+            )
+            display = "Proyectos:\n" + "\n".join(f"• {item['name']}" for item in items)
+            return ActionResult(
+                action=row_clave,
+                metodo="seleccionar_proyecto",
+                valor=name,
+                spoken_override=spoken,
+                extra={
+                    "error": "ambiguous",
+                    "needs_project": True,
+                    "items": items,
+                    "display": display,
+                    "items_title": "Elegí un proyecto",
+                },
+            )
+
+        row = matches[0]
+        set_selected_proyect_id(int(row.id))
+        logger.info(
+            "Proyecto seleccionado id=%s user=%s name=%r",
+            row.id,
+            user.id,
+            row.name,
+        )
+        spoken = f"Listo, seleccioné el proyecto {row.name}."
+        return ActionResult(
+            action=row_clave,
+            metodo="seleccionar_proyecto",
+            valor=row.name,
+            spoken_override=spoken,
+            extra={
+                "proyect_id": int(row.id),
+                "id": int(row.id),
+                "name": row.name,
+                "selected": True,
+                "ui_select": True,
             },
         )
 
@@ -3272,6 +3419,8 @@ async def run_llm_action(
         clave = "agregar_tarea"
     if not clave and wants_delete_task(user_text):
         clave = "eliminar_tarea"
+    if not clave and wants_select_project(user_text):
+        clave = "seleccionar_proyecto"
     if not clave and wants_delete_project(user_text):
         clave = "eliminar_proyecto"
     if not clave and wants_delete_messages(user_text):
@@ -3291,6 +3440,8 @@ async def run_llm_action(
         valor = selected or valor or extract_task_project(user_text)
         if selected:
             valor1 = selected
+    if clave == "seleccionar_proyecto" and not valor:
+        valor = extract_select_project_name(user_text)
     if clave == "agregar_proyecto" and not valor:
         valor = extract_add_project_name(user_text)
     if clave == "agregar_tarea":
@@ -3328,6 +3479,7 @@ async def run_llm_action(
         "listar_proyectos",
         "listar_tareas",
         "agregar_proyecto",
+        "seleccionar_proyecto",
         "eliminar_proyecto",
         "agregar_tarea",
         "eliminar_tarea",

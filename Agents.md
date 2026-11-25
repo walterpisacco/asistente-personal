@@ -1,11 +1,9 @@
 # Agents.md — contexto para el coding agent
 
 ## Qué es este repo
-Bot hecho en Python. El LLM conversa con el usuario; STT/TTS.
-El Bot está continuamente escuchando. La conversación se activa en local: VAD y keyword spotting de «hola soy {username}» por cada usuario activo. El STT en la nube corre recién después de esa activación.
-El Bot está contunuamente haciendo reconicimiento de imagen y la conversación se activa cuando encuentra un rostro. 
-Los cambios de turno en la conversacion se realizan por tiempo de silencios cortos configurado en BOT_SILENCE_MS.
-La conversación se desactiva luego de un silencio prolongado configurado en BOT_END_CALL_MS.
+Bot hecho en Python. Por defecto usa **OpenAI Realtime** (`CONVERSATION_MODE=realtime`, modelo `gpt-realtime-2.1`) speech-to-speech, con transcripción de entrada (`gpt-4o-mini-transcribe`). Alternativa: `pipeline` (STT→LLM→TTS).
+El Bot está continuamente escuchando. Tras login, la conversación se activa con wake local («hola»). En modo realtime el audio va por WebSocket a OpenAI; en pipeline el STT corre recién después de activar.
+La conversación se desactiva luego de un silencio prolongado (`BOT_END_CALL_MS`) o con la acción finalizar.
 
 ## Prompt del bot (runtime)
 - Archivo canónico: `backend/prompts/bot_system_prompt.txt`

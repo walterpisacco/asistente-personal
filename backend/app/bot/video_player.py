@@ -307,11 +307,56 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
     .panel-right {{
       min-width: 0;
       display: flex;
+      flex-direction: column;
       align-items: stretch;
+      gap: 12px;
+    }}
+    .proyect-bar {{
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 2px 2px 4px;
+      scrollbar-width: thin;
+    }}
+    .proyect-bar::-webkit-scrollbar {{ height: 6px; }}
+    .proyect-btn {{
+      flex: 0 0 auto;
+      border: 1px solid rgba(126, 220, 230, .28);
+      background: rgba(12, 28, 40, .55);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 10px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: .02em;
+      cursor: pointer;
+      white-space: nowrap;
+      max-width: 28ch;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: background .2s ease, border-color .2s ease, color .2s ease;
+    }}
+    .proyect-btn:hover {{
+      border-color: rgba(126, 220, 230, .55);
+      background: rgba(90, 200, 210, .14);
+    }}
+    .proyect-btn.active {{
+      background: rgba(90, 200, 210, .28);
+      border-color: var(--accent);
+      color: #eaffff;
+      box-shadow: 0 0 0 1px rgba(126, 220, 230, .25);
+    }}
+    .proyect-empty {{
+      margin: 0;
+      padding: 8px 4px;
+      font-size: 13px;
+      color: var(--muted);
     }}
     .photo-card {{
       position: relative;
       flex: 1;
+      min-height: 0;
       border-radius: var(--card-radius);
       overflow: hidden;
       box-shadow:
@@ -398,6 +443,9 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
       </div>
     </section>
     <section class="panel-right">
+      <div class="proyect-bar" id="proyect-bar" aria-label="Proyectos">
+        <p class="proyect-empty">Cargando proyectos…</p>
+      </div>
       <div class="photo-card" id="photo-card">
         {images}
         <iframe class="yt-frame" id="yt-frame" title="YouTube"
@@ -412,9 +460,81 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
     const card = document.getElementById("photo-card");
     const yt = document.getElementById("yt-frame");
     const caption = document.getElementById("photo-caption");
+    const proyectBar = document.getElementById("proyect-bar");
     const frames = Array.from(document.querySelectorAll(".photo-card img"));
     let frameIndex = 0;
     let carouselTimer = null;
+    let selectedProyectId = null;
+
+    function renderProyects(rows) {{
+      if (!proyectBar) return;
+      const list = Array.isArray(rows) ? rows : [];
+      if (!list.length) {{
+        proyectBar.innerHTML = '<p class="proyect-empty">Sin proyectos</p>';
+        return;
+      }}
+      const active = list.find((p) => p.selected) || list[0];
+      selectedProyectId = active ? active.id : null;
+      proyectBar.innerHTML = list.map((p) => {{
+        const activeCls = p.id === selectedProyectId ? " active" : "";
+        const label = (p.name || ("Proyecto " + p.id)).replace(/[<>&"]/g, (c) => ({{
+          "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;"
+        }})[c]);
+        return '<button type="button" class="proyect-btn' + activeCls +
+          '" data-id="' + p.id + '" title="' + label + '">' + label + '</button>';
+      }}).join("");
+      proyectBar.querySelectorAll(".proyect-btn").forEach((btn) => {{
+        btn.addEventListener("click", () => selectProyect(Number(btn.dataset.id)));
+      }});
+    }}
+
+    async function loadProyects() {{
+      try {{
+        const res = await fetch("/api/proyects", {{ cache: "no-store" }});
+        const data = await res.json();
+        renderProyects(data.proyects || data || []);
+      }} catch (err) {{
+        if (proyectBar) proyectBar.innerHTML = '<p class="proyect-empty">No se pudieron cargar proyectos</p>';
+      }}
+    }}
+
+    function highlightProyect(proyectId) {{
+      if (!proyectId) return;
+      selectedProyectId = proyectId;
+      if (!proyectBar) return;
+      const buttons = proyectBar.querySelectorAll(".proyect-btn");
+      if (!buttons.length) {{
+        loadProyects();
+        return;
+      }}
+      let found = false;
+      buttons.forEach((btn) => {{
+        const active = Number(btn.dataset.id) === Number(proyectId);
+        btn.classList.toggle("active", active);
+        if (active) {{
+          found = true;
+          try {{ btn.scrollIntoView({{ behavior: "smooth", inline: "center", block: "nearest" }}); }} catch (e) {{}}
+        }}
+      }});
+      if (!found) loadProyects();
+    }}
+
+    async function selectProyect(proyectId) {{
+      if (!proyectId || proyectId === selectedProyectId) return;
+      highlightProyect(proyectId);
+      try {{
+        await fetch("/api/proyect", {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify({{ proyect_id: proyectId }}),
+        }});
+      }} catch (err) {{
+        console.warn("No se pudo guardar el proyecto", err);
+      }}
+    }}
+
+    loadProyects();
+    setInterval(loadProyects, 15000);
 
     function startCarousel() {{
       if (carouselTimer || !frames.length) return;
@@ -457,6 +577,14 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
         const res = await fetch("/api/state", {{ cache: "no-store" }});
         if (!res.ok) return;
         const s = await res.json();
+        // Selección por voz (seleccionar_proyecto) → activar botón.
+        if (
+          typeof s.selected_proyect_id === "number" &&
+          s.selected_proyect_id > 0 &&
+          s.selected_proyect_id !== selectedProyectId
+        ) {{
+          highlightProyect(s.selected_proyect_id);
+        }}
         if (typeof s.seq !== "number" || s.seq === lastSeq) return;
         lastSeq = s.seq;
         if (s.mode === "play") window.toriPlay(s.id || "", s.title || "");
@@ -687,7 +815,14 @@ class _IdleControlServer:
 
     def snapshot(self) -> dict[str, object]:
         with self._lock:
-            return dict(self._state)
+            data = dict(self._state)
+        try:
+            from app.bot.proyect_context import get_selected_proyect_id
+
+            data["selected_proyect_id"] = get_selected_proyect_id()
+        except Exception:
+            data["selected_proyect_id"] = None
+        return data
 
     def html(self) -> str:
         with self._lock:
@@ -699,6 +834,15 @@ class _IdleControlServer:
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt: str, *args) -> None:  # noqa: A003
                 return
+
+            def _json(self, code: int, payload: dict | list) -> None:
+                body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
 
             def do_GET(self) -> None:  # noqa: N802
                 path = urlparse(self.path).path
@@ -712,17 +856,74 @@ class _IdleControlServer:
                     self.wfile.write(body)
                     return
                 if path == "/api/state":
-                    payload = json.dumps(
-                        server.snapshot(), ensure_ascii=False
-                    ).encode("utf-8")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json; charset=utf-8")
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    self.wfile.write(payload)
+                    self._json(200, server.snapshot())
+                    return
+                if path == "/api/proyects":
+                    try:
+                        from app.bot.proyect_context import (
+                            get_selected_proyect_id,
+                            list_proyects_for_session_user,
+                        )
+
+                        rows = list_proyects_for_session_user()
+                        self._json(
+                            200,
+                            {
+                                "proyects": rows,
+                                "selected_proyect_id": get_selected_proyect_id(),
+                            },
+                        )
+                    except Exception as exc:
+                        logger.warning("GET /api/proyects: %s", exc)
+                        self._json(500, {"detail": "No se pudieron listar proyectos"})
+                    return
+                if path == "/api/proyect":
+                    try:
+                        from app.bot.proyect_context import get_selected_proyect_id
+
+                        self._json(
+                            200, {"proyect_id": get_selected_proyect_id()}
+                        )
+                    except Exception as exc:
+                        logger.warning("GET /api/proyect: %s", exc)
+                        self._json(500, {"detail": "error"})
                     return
                 self.send_error(404)
+
+            def do_POST(self) -> None:  # noqa: N802
+                path = urlparse(self.path).path
+                if path != "/api/proyect":
+                    self.send_error(404)
+                    return
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length).decode("utf-8", errors="replace")
+                try:
+                    data = json.loads(raw) if raw else {}
+                except json.JSONDecodeError:
+                    self._json(400, {"detail": "JSON inválido"})
+                    return
+                try:
+                    proyect_id = int(data.get("proyect_id"))
+                except (TypeError, ValueError):
+                    self._json(400, {"detail": "proyect_id inválido"})
+                    return
+                try:
+                    from app.bot.proyect_context import (
+                        list_proyects_for_session_user,
+                        set_selected_proyect_id,
+                    )
+
+                    rows = list_proyects_for_session_user()
+                    ids = {int(r["id"]) for r in rows}
+                    if proyect_id not in ids:
+                        self._json(404, {"detail": "Proyecto no encontrado"})
+                        return
+                    set_selected_proyect_id(proyect_id)
+                    logger.info("UI seleccionó proyect_id=%s", proyect_id)
+                    self._json(200, {"ok": True, "proyect_id": proyect_id})
+                except Exception as exc:
+                    logger.warning("POST /api/proyect: %s", exc)
+                    self._json(500, {"detail": "No se pudo guardar el proyecto"})
 
         self._httpd = ThreadingHTTPServer((host, port), Handler)
         self.port = int(self._httpd.server_address[1])
