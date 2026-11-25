@@ -28,23 +28,11 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger("tori.video")
 
-# Frases hablables para el panel idle (clave → plantilla; {valor} opcional).
-_SUGGESTION_PHRASES: dict[str, str] = {
-    "ver_video": "Poné música de {valor}",
-    "detener_video": "Pará la música",
-    "agregar_recordatorio": "Recordame ir al dentista mañana",
-    "listar_recordatorios": "¿Qué recordatorios tengo?",
-}
-_SUGGESTION_ORDER = (
-    "ver_video",
-    "agregar_recordatorio",
-    "listar_recordatorio",
-    "detener_video",
-)
+# Fallback si no hay ejemplos en DB.
 _SUGGESTION_FALLBACK = [
     {"clave": "ver_video", "phrase": "Poné música de Madonna"},
     {"clave": "agregar_recordatorio", "phrase": "Recordame ir al dentista mañana"},
-    {"clave": "listar_recordatorio", "phrase": "¿Qué recordatorios tengo?"},
+    {"clave": "listar_recordatorios", "phrase": "¿Qué recordatorios tengo?"},
     {"clave": "detener_video", "phrase": "Pará la música"},
 ]
 
@@ -90,36 +78,25 @@ def _find_chrome() -> str | None:
     return None
 
 
-def _phrase_for_action(clave: str, valor: str = "") -> str | None:
-    template = _SUGGESTION_PHRASES.get(clave)
-    if not template:
-        return None
-    if "{valor}" in template:
-        sample = (valor or "").strip() or "Madonna"
-        return template.replace("{valor}", sample)
-    return template
-
-
 def _load_action_suggestions() -> list[dict[str, str]]:
-    """Sugerencias hablables desde la tabla actions; fallback estático si falla DB."""
+    """Sugerencias hablables desde actions.ejemplos (orden); fallback si falla DB."""
     try:
         from app.core.database import SessionLocal
         from app.repositories.action_repository import ActionRepository
 
         db = SessionLocal()
         try:
-            rows = ActionRepository(db).list_all()
+            rows = ActionRepository(db).list_examples()
         finally:
             db.close()
-        by_clave = {r.clave.strip().lower(): r for r in rows}
-        out: list[dict[str, str]] = []
-        for clave in _SUGGESTION_ORDER:
-            row = by_clave.get(clave)
-            if row is None:
-                continue
-            phrase = _phrase_for_action(clave, row.valor or "")
-            if phrase:
-                out.append({"clave": clave, "phrase": phrase})
+        out = [
+            {
+                "clave": (r.clave or "").strip(),
+                "phrase": (r.ejemplos or "").strip(),
+            }
+            for r in rows
+            if (r.ejemplos or "").strip()
+        ]
         if out:
             return out
     except Exception as exc:
@@ -143,6 +120,7 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
         for i, item in enumerate(items)
     )
     hero_phrase = html.escape(items[0]["phrase"]) if items else "Decime en qué te ayudo"
+    visible_count = min(3, len(items)) if items else 3
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -251,23 +229,52 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
       opacity: 0;
       transform: translateY(8px);
     }}
+    .suggest-viewport {{
+      --chip-h: 62px;
+      --chip-gap: 10px;
+      --visible: {visible_count};
+      margin: clamp(22px, 3.5vh, 40px) 0 0;
+      height: calc(var(--visible) * var(--chip-h) + (var(--visible) - 1) * var(--chip-gap));
+      overflow: hidden;
+      position: relative;
+      mask-image: linear-gradient(
+        to bottom,
+        transparent 0%,
+        #000 8%,
+        #000 92%,
+        transparent 100%
+      );
+      -webkit-mask-image: linear-gradient(
+        to bottom,
+        transparent 0%,
+        #000 8%,
+        #000 92%,
+        transparent 100%
+      );
+    }}
     .suggestions {{
       list-style: none;
-      margin: clamp(22px, 3.5vh, 40px) 0 0;
+      margin: 0;
       padding: 0;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: var(--chip-gap);
+      will-change: transform;
+      transition: transform .55s cubic-bezier(.22, .8, .28, 1);
     }}
     .chip {{
       display: flex;
       flex-direction: column;
+      justify-content: center;
       gap: 2px;
-      padding: 12px 16px;
+      height: var(--chip-h);
+      box-sizing: border-box;
+      padding: 10px 16px;
       border-radius: 16px;
       background: var(--chip);
       border: 1px solid transparent;
-      opacity: .55;
+      opacity: .45;
+      flex-shrink: 0;
       transition: opacity .4s ease, background .4s ease, border-color .4s ease,
         transform .4s ease;
     }}
@@ -287,6 +294,9 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
     .chip-phrase {{
       font-size: clamp(14px, 1.6vw, 17px);
       font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }}
     .foot {{
       margin-top: auto;
@@ -433,9 +443,11 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
       <div class="hero">
         <p class="hero-lead">Te estoy escuchando</p>
         <p class="hero-phrase" id="hero-phrase">{hero_phrase}</p>
-        <ul class="suggestions" id="suggestions">
-          {chips}
-        </ul>
+        <div class="suggest-viewport" id="suggest-viewport">
+          <ul class="suggestions" id="suggestions">
+            {chips}
+          </ul>
+        </div>
       </div>
       <div class="foot">
         <p class="listen">Decí “hola” para activarme</p>
@@ -594,28 +606,80 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
     setInterval(pollState, 400);
     pollState();
 
-    const chips = Array.from(document.querySelectorAll(".chip"));
+    const viewport = document.getElementById("suggest-viewport");
+    const track = document.getElementById("suggestions");
     const hero = document.getElementById("hero-phrase");
-    let chipIndex = 0;
+    const VISIBLE = 3;
+    let chips = Array.from(document.querySelectorAll(".chip"));
+    let offset = 0;
+    let stepPx = 72;
+
+    function measureStep() {{
+      if (!chips.length) return;
+      const styles = getComputedStyle(track);
+      const gap = parseFloat(styles.rowGap || styles.gap) || 10;
+      stepPx = chips[0].offsetHeight + gap;
+      if (viewport) {{
+        const shown = Math.min(VISIBLE, chips.length);
+        viewport.style.setProperty("--visible", String(shown));
+        viewport.style.height = (shown * chips[0].offsetHeight + (shown - 1) * gap) + "px";
+      }}
+    }}
+
     function setActiveChip(i) {{
-      if (!chips.length || !hero) return;
+      if (!chips.length) return;
       chips.forEach((c) => c.classList.remove("active"));
       const chip = chips[i];
+      if (!chip) return;
       chip.classList.add("active");
       const phrase = chip.querySelector(".chip-phrase");
-      if (!phrase) return;
+      if (!phrase || !hero) return;
       hero.classList.add("swap");
       setTimeout(() => {{
         hero.textContent = phrase.textContent || "";
         hero.classList.remove("swap");
       }}, 220);
     }}
-    if (chips.length > 1) {{
-      setInterval(() => {{
-        chipIndex = (chipIndex + 1) % chips.length;
-        setActiveChip(chipIndex);
-      }}, 7000);
+
+    function renderCarousel() {{
+      if (!track || !chips.length) return;
+      // Duplicar ítems si hay pocos para que el loop vertical no quede vacío.
+      if (chips.length < VISIBLE && chips.length > 0) {{
+        const seed = chips.map((c) => c.outerHTML).join("");
+        while (track.children.length < VISIBLE + 1) {{
+          track.insertAdjacentHTML("beforeend", seed);
+        }}
+        chips = Array.from(track.querySelectorAll(".chip"));
+      }}
+      measureStep();
+      const maxOffset = Math.max(0, chips.length - VISIBLE);
+      if (offset > maxOffset) offset = 0;
+      track.style.transform = "translateY(-" + (offset * stepPx) + "px)";
+      const activeIdx = Math.min(offset + Math.floor(Math.min(VISIBLE, chips.length) / 2), chips.length - 1);
+      setActiveChip(activeIdx);
     }}
+
+    function advanceCarousel() {{
+      if (chips.length <= 1) return;
+      const maxOffset = Math.max(0, chips.length - VISIBLE);
+      if (maxOffset <= 0) {{
+        // Menos de 3 ítems reales: rotar el activo sin desplazar.
+        offset = (offset + 1) % chips.length;
+        setActiveChip(offset);
+        return;
+      }}
+      offset = offset >= maxOffset ? 0 : offset + 1;
+      renderCarousel();
+    }}
+
+    renderCarousel();
+    if (chips.length > 1) {{
+      setInterval(advanceCarousel, 4500);
+    }}
+    window.addEventListener("resize", () => {{
+      measureStep();
+      track.style.transform = "translateY(-" + (offset * stepPx) + "px)";
+    }});
 
     const timeEl = document.getElementById("clock-time");
     const dateEl = document.getElementById("clock-date");
