@@ -7,6 +7,7 @@ from app.providers.tts.base import TTSProvider
 
 logger = logging.getLogger(__name__)
 
+# Google voices look like "es-US-Neural2-B"; ElevenLabs ids do not.
 GOOGLE_VOICE_RE = re.compile(r"^[a-z]{2}-[A-Z]{2}-")
 
 
@@ -15,7 +16,7 @@ class GoogleTTSProvider(TTSProvider):
         self,
         credentials_path: str = "",
         language: str = "es-US",
-        voice: str = "es-US-Neural2-A",
+        voice: str = "es-US-Neural2-B",
         speaking_rate: float = 1.0,
         pitch: float = 0.0,
     ) -> None:
@@ -33,15 +34,17 @@ class GoogleTTSProvider(TTSProvider):
 
         path = Path(self.credentials_path)
         if not path.is_absolute():
+            # El backend se ejecuta desde backend/, donde vive el .env.
             path = Path.cwd() / path
         if not path.exists():
             raise FileNotFoundError(
                 f"Google credentials not found: {path}. "
-                "Revisá GOOGLE_CREDENTIAL en el .env."
+                "Revisá GOOGLE_APPLICATION_CREDENTIALS en el .env."
             )
         return texttospeech.TextToSpeechClient.from_service_account_file(str(path))
 
     def _resolve_voice(self, voice_id: str) -> str:
+        """El voice_id del personaje puede venir de otro proveedor (ElevenLabs)."""
         if voice_id and GOOGLE_VOICE_RE.match(voice_id):
             return voice_id
         return self.voice

@@ -19,12 +19,13 @@ La conversación se desactiva luego de un silencio prolongado configurado en BOT
 - Preferir frases cortas por turno; 
 
 ## Identificación de usuario
-Cuando se activa la conversación con «hola soy {alias}», el backend busca ese username en `users` y devuelve el id, full_name, gender, age. No usa el embedding de voz para identificar.
+El bot autentica con **usuario/contraseña** (mismas credenciales que mobile/web: `AuthService.login` / `POST /api/v1/auth/login`).
+La pantalla de login corre al arrancar (`app/bot/login_gate.py`); la sesión queda en `backend/data/bot_session.json`.
 
-Cuando se activa la conversación con la identificación de rostro, el backend busca el embeddings del rostro en la base de datos y devuelve el id, full_name, gender, age.
+La wake word («hola», «hola tori», …) **solo activa** la conversación; ya no identifica a la persona.
+El usuario de la sesión se relee de la DB en cada activación.
 
-
-El bot No debe crear usuarios.
+El bot no debe crear usuarios.
 
 ## Inyección de contexto de usuario
 El backend inyecta el JSON (CRM) al inicio de la conversación:
@@ -33,7 +34,7 @@ Claves relevantes: `id`, `full_name`, `gender`, `age`.
 No hardcodear datos de los usuarios en el system prompt ni en este archivo.
 
 ## Convenciones de producto
-- Flujo: «hola soy {alias}» → usuario de esa frase → Conversación → Finalización
+- Flujo: Login (usuario/contraseña) → «hola» → Conversación → Finalización
 - Temas: hablar de cualquier tema.
 - El bot puede buscar y reproducir videos de YouTube por artista, género o tema (búsqueda general, sin canal de usuario).
 - `Agents.md` es contexto para desarrollo en Cursor; no lo lee el LLM

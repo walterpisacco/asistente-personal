@@ -14,6 +14,9 @@ class ConversationMessage(Base):
     conversation_id: Mapped[str] = mapped_column(
         ForeignKey("conversations.id"), nullable=False, index=True
     )
+    proyect_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("proyects.id"), nullable=True, index=True
+    )
     role: Mapped[str] = mapped_column(String(32), nullable=False)  # user | assistant
     text: Mapped[str] = mapped_column(Text, nullable=False)
     audio_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
@@ -23,3 +26,4 @@ class ConversationMessage(Base):
     )
 
     conversation = relationship("Conversation", back_populates="messages")
+    proyect = relationship("Proyects", back_populates="conversation_messages")

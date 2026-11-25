@@ -7,6 +7,8 @@ logger = logging.getLogger(__name__)
 
 
 class MockLLMProvider(LLMProvider):
+    """Respuesta local para demos sin OpenAI/Ollama."""
+
     async def generate(
         self,
         messages: list[dict[str, Any]],
@@ -18,4 +20,8 @@ class MockLLMProvider(LLMProvider):
                 last = str(msg.get("content") or "")
                 break
         logger.warning("Mock LLM used. last_user=%s", last[:80])
-        return "Dale, te escucho. Decime en qué te puedo ayudar."
+        return (
+            "¡Qué buena pregunta! Este Malbec Reserva se luce con un asado, "
+            "unas pastas con salsa o un queso bien curado. "
+            "Si querés, te cuento más sobre su crianza en barrica."
+        )

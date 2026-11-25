@@ -8,11 +8,10 @@ logger = logging.getLogger(__name__)
 
 
 class ElevenLabsTTSProvider(TTSProvider):
-    def __init__(self, api_key: str, speed: float = 1.0) -> None:
+    def __init__(self, api_key: str) -> None:
         if not api_key:
             raise ValueError("ELEVENLABS_API_KEY is required for ElevenLabs provider")
         self.api_key = api_key
-        self.speed = speed
         self.base_url = "https://api.elevenlabs.io/v1"
 
     async def synthesize(self, text: str, voice_id: str) -> bytes:

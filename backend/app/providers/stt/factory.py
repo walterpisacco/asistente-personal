@@ -23,4 +23,6 @@ def create_stt_provider(settings: Settings) -> STTProvider:
         )
     if provider == "mock":
         return MockSTTProvider()
+    if provider == "whisper":
+        raise NotImplementedError("Whisper STT provider not implemented yet")
     raise ValueError(f"Unsupported STT_PROVIDER: {settings.stt_provider}")

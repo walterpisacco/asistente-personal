@@ -13,12 +13,10 @@ def create_tts_provider(settings: Settings) -> TTSProvider:
             api_key=settings.deepgram_api_key,
             default_voice=settings.deepgram_voice,
             base_url=settings.deepgram_url,
+            speed=settings.deepgram_speed,
         )
     if provider == "elevenlabs":
-        return ElevenLabsTTSProvider(
-            api_key=settings.elevenlabs_api_key,
-            speed=settings.elevenlabs_speed,
-        )
+        return ElevenLabsTTSProvider(api_key=settings.elevenlabs_api_key)
     if provider == "google":
         return GoogleTTSProvider(
             credentials_path=settings.google_application_credentials,

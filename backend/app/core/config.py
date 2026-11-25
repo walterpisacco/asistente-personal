@@ -1,17 +1,16 @@
 import json
+import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
-import os
+from typing import Any, List
 from urllib.parse import quote_plus
 
+from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from dotenv import load_dotenv
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
-# Credenciales MySQL desde el .env de la raíz del repo (antes de importar el backend).
 ENV_PATH = _BACKEND_ROOT / ".env"
 if not ENV_PATH.is_file():
     raise SystemExit(f"No se encontró {ENV_PATH}")
@@ -22,6 +21,7 @@ user = os.getenv("CALL_METRICS_MYSQL_USER", "root")
 password = quote_plus(os.getenv("CALL_METRICS_MYSQL_PASSWORD", ""))
 database = os.getenv("CALL_METRICS_MYSQL_DATABASE", "asistente")
 port = os.getenv("CALL_METRICS_MYSQL_PORT", "3306")
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     database_url: str = f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}"
 
+    # --- Bot local ---
     bot_enabled: bool = True
     bot_greeting: str = "Hola"
     bot_opening_mode: str = "immediate"  # immediate | llm
@@ -48,30 +49,29 @@ class Settings(BaseSettings):
     bot_vad_energy: float = 400.0
     bot_preroll_ms: int = 700
     bot_wake_window_ms: int = 2500
-    # Keyword spotting local (sherpa-onnx). El STT en la nube corre recién después.
     bot_kws_model_dir: str = "models/kws-es"
     bot_kws_repo: str = "jguerrisi/sherpa-onnx-kws-zipformer-es-3M-2026-08-08"
     bot_kws_score: float = 1.0
     bot_kws_threshold: float = 0.25
     bot_kws_trailing_ms: int = 1000
     bot_wake_trace: bool = False
+    # Frases wake genéricas (coma-separadas) cuando el usuario ya hizo login.
+    # Vacío = «hola,hola tori,oye tori».
+    bot_wake_phrases: str = ""
     bot_sample_rate: int = 16000
     bot_mic_input_gain: float = 0.35
     bot_guest_user_id: str = "user_guest"
-    # Tras TTS: pausa antes de reabrir mic + settle para descartar eco (etiquetas-ia).
     bot_post_tts_delay_ms: int = 500
     bot_mic_settle_ms: int = 450
-    # UI idle: host local (poner en /etc/hosts → 127.0.0.1). Evita bloqueo de embed en 127.0.0.1.
     bot_ui_host: str = "tori.local"
     bot_ui_port: int = 8765
-    # embed = video en el panel derecho; watch = pantalla completa YouTube
     bot_ui_video_mode: str = "embed"
-    # Tamaño ventana Chrome (--app). 0 = maximizada.
     bot_ui_width: int = 1280
     bot_ui_height: int = 800
 
     voice_id_threshold: float = 0.75
 
+    # --- Providers ---
     llm_provider: str = "openai"
     stt_provider: str = "deepgram"
     tts_provider: str = "deepgram"
@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     deepgram_model: str = "nova-3"
     deepgram_language: str = "es-419"
     deepgram_voice: str = "aura-2-celeste-es"
+    deepgram_speed: float = 1.0
 
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
@@ -99,6 +100,7 @@ class Settings(BaseSettings):
     openai_temperature: float = 1.0
     openai_max_tokens: int = 1000
     openai_timeout: int = 60
+    intent_timeout_seconds: float = 8.0
 
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "gemma3:4b"
@@ -109,6 +111,27 @@ class Settings(BaseSettings):
     elevenlabs_speed: float = 1.10
 
     audio_dir: str = "static/audio"
+    cors_origins: str = "http://localhost:3000,http://localhost:8081,http://localhost:5173"
+
+    # CLIP label matching
+    clip_model_name: str = "openai/clip-vit-base-patch32"
+    label_match_threshold: float = 0.75
+
+    # --- Seguridad API ---
+    app_api_token: str = ""
+    trust_proxy_headers: bool = True
+    rate_limit_per_minute: int = 120
+    rate_limit_expensive_per_minute: int = 20
+    geo_restrict_enabled: bool = False
+    geo_restrict_countries: str = "AR"
+    geo_allow_private: bool = True
+
+    # --- Auth JWT ---
+    jwt_secret: str = "change-me-jwt-secret-use-long-random"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 1440
+    admin_bootstrap_username: str = "admin"
+    admin_bootstrap_password: str = ""
 
     call_metrics_enabled: bool = True
     call_metrics_mysql_host: str = ""
@@ -122,6 +145,10 @@ class Settings(BaseSettings):
         if path.is_absolute():
             return path
         return _BACKEND_ROOT / path
+
+    @property
+    def cors_origins_list(self) -> List[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
     @property
     def resolved_bot_system_prompt(self) -> str:

@@ -393,7 +393,7 @@ def idle_html(suggestions: list[dict[str, str]] | None = None) -> str:
         </ul>
       </div>
       <div class="foot">
-        <p class="listen">Decí “hola soy …” para activarme</p>
+        <p class="listen">Decí “hola” para activarme</p>
         <a class="login" href="https://www.youtube.com/">Iniciar sesión en YouTube</a>
       </div>
     </section>

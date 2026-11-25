@@ -12,7 +12,7 @@ class Action(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     description: Mapped[str] = mapped_column(String(500), nullable=False)
     clave: Mapped[str] = mapped_column(String(120), nullable=False, unique=True, index=True)
-    # Valor de ejemplo / hint opcional (el valor runtime lo manda el LLM).
     valor: Mapped[str] = mapped_column(String(500), nullable=False, default="")
-    # Nombre del handler registrado en ActionDispatcher (ej. ver_video).
     metodo: Mapped[str] = mapped_column(String(120), nullable=False)
+    ejemplos: Mapped[str] = mapped_column(String(100), nullable=True)
+    orden: Mapped[int] = mapped_column(Integer, nullable=True)

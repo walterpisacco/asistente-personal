@@ -1,10 +1,13 @@
 from datetime import datetime
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-from sqlalchemy import JSON, DateTime, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.avatars import Avatar
 
 
 class Character(Base):
@@ -21,6 +24,16 @@ class Character(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    free_plan: Mapped[bool] = mapped_column(Boolean, default=False)
+    basic_plan: Mapped[bool] = mapped_column(Boolean, default=False)
+    premium_plan: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    conversations = relationship("Conversation", back_populates="character")
     users = relationship("User", back_populates="character")
+    conversations = relationship("Conversation", back_populates="character")
+    avatars: Mapped[list["Avatar"]] = relationship(
+        "Avatar",
+        back_populates="character",
+        order_by="Avatar.id",
+        cascade="all, delete-orphan",
+    )
+

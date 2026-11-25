@@ -13,7 +13,15 @@ if TYPE_CHECKING:
 
 
 class Recordatory(Base):
-    """Recordatorio programado para un usuario."""
+    """Recordatorio programado para un usuario.
+
+    recurrence:
+      - once: un solo disparo en scheduled_at
+      - daily: todos los días a time_of_day
+      - weekly: días en weekdays (ISO 1=lun … 7=dom)
+      - weekends: sábados y domingos (weekdays=6,7)
+    scheduled_at siempre guarda la próxima ocurrencia a notificar.
+    """
 
     __tablename__ = "recordatory"
 
@@ -32,6 +40,10 @@ class Recordatory(Base):
     )
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     state: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    recurrence: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="once", server_default="once"
+    )
+    time_of_day: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
+    weekdays: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="recordatories")
-

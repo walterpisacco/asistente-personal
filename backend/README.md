@@ -1,60 +1,29 @@
-# Asistente personal TORI
+# Bottle AI — Backend
 
-Bot de voz headless (sin frontend): escucha continua, se activa con **hola soy {alias}**, conversación STT → LLM → TTS.
+FastAPI + MySQL + providers intercambiables (LLM / STT / TTS).
 
-## Requisitos
+## Endpoints
 
-- Python 3.11+
-- MySQL
-- Micrófono y salida de audio (`sudo apt install libportaudio2 portaudio19-dev`)
-- API keys en `backend/.env` (Deepgram / OpenAI / etc.)
-- Base de datos dedicada `asistente_personal` (no reutilizar la de etiquetas-ia)
+- `GET /api/v1/products/{qr_code}`
+- `GET /api/v1/characters/{character_id}`
+- `POST /api/v1/conversations`
+- `POST /api/v1/conversations/{id}/audio`
+- `GET /api/v1/conversations/{id}`
+- `POST /api/v1/metrics`
+- `WS /ws/v1/conversations/{id}`
 
-## Setup
+### Seed de demo
 
 ```bash
 cd backend
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-
-# Crear DB y migrar
-alembic upgrade head
-python scripts/seed_database.py
-
-# Correr el bot
-python scripts/run_bot.py
-# o: python -m app.bot
+sudo pip install -r requirements.txt
+python ../scripts/seed_database.py
 ```
-
-## Flujo
-
-1. Idle: VAD local y keyword spotting local. No llama al STT hasta activar. El modelo (~5 MB) se descarga solo la primera vez a `backend/models/kws-es/`.
-2. La frase detectada elige al usuario (`hola soy walter`). No usa el embedding de voz.
-3. Inyecta CRM JSON al system prompt
-4. Turnos por `BOT_SILENCE_MS`; cierra por `BOT_END_CALL_MS`
-5. Acciones YouTube vía `config/bot_action_triggers.json`
-
-## Frase de activación
+## Levantar BackEnd
 
 ```bash
-https://github.com/k2-fsa/sherpa-onnx
+source .venv/bin/activate
+uvicorn app.main:app --host 127.0.0.1 --port 8005 --reload
 ```
-
-El bot toma cada usuario activo y arma `hola soy {alias}` (minúsculas, sin acentos: «hola soy walter»).
-
-Esas frases se escriben en `backend/models/kws-es/keywords.wake.txt`. El archivo se regenera en cada inicio: no editarlo a mano. `backend/models/` no va al repositorio.
-
-Un usuario nuevo entra en la lista al reiniciar el bot. Si el nombre usa un token que el modelo no tiene, el arranque falla. Dos usernames que normalizan igual también frenan el arranque.
-
-Sensibilidad (en `.env`):
-
-- `BOT_KWS_THRESHOLD=0.25` — más bajo, más fácil de activar
-- `BOT_KWS_SCORE=1.0` — más alto, más sesgo hacia la frase
-
-## Estructura
-
-- `app/core` — config y DB
-- `app/providers` — STT / TTS / LLM (Deepgram, Google, ElevenLabs, OpenAI, Ollama, mock)
-- `app/services` — conversación, voice ID, YouTube, actions
-- `app/bot` — mic, VAD, wake word, playback

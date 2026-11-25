@@ -7,13 +7,16 @@ from app.core.config import get_settings
 from app.core.database import Base
 from app.models import (  # noqa: F401
     Action,
+    Avatar,
     Character,
     Conversation,
     ConversationMessage,
     Interaction,
+    Proyects,
     Recordatory,
+    Tasks,
     User,
-    UserEmbedding,
+    UserProfile,
 )
 
 config = context.config
@@ -22,8 +25,7 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 settings = get_settings()
-# ConfigParser trata % como interpolación; escapar para passwords URL-encoded.
-config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+config.set_main_option("sqlalchemy.url", settings.database_url)
 
 
 def run_migrations_offline() -> None:

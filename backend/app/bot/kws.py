@@ -104,6 +104,13 @@ VIDEO_COMMAND_PHRASES: dict[str, str] = {
     "parar video": "detener_video",
 }
 
+# Wake genérico cuando el usuario ya está autenticado por login (sin alias).
+DEFAULT_SESSION_WAKE_PHRASES: tuple[str, ...] = (
+    "hola",
+    "hola tori",
+    "oye tori",
+)
+
 
 def encode_keyword_line(
     phrase: str,
@@ -151,15 +158,20 @@ class WakeWordSpotter:
         self,
         *,
         model_dir: Path,
-        usernames: list[str],
+        usernames: list[str] | None = None,
+        session_wake_phrases: list[str] | None = None,
         sample_rate: int = 16000,
         score: float = 1.0,
         threshold: float = 0.25,
     ) -> None:
         if sample_rate != 16000:
             raise RuntimeError("El keyword spotter local requiere sample rate 16000")
-        if not usernames:
-            raise ValueError("No hay usuarios activos para la frase de activación")
+        usernames = list(usernames or [])
+        session_wake_phrases = [
+            _normalize(p) for p in (session_wake_phrases or []) if _normalize(p)
+        ]
+        if not usernames and not session_wake_phrases:
+            raise ValueError("No hay frases de activación configuradas")
 
         import sherpa_onnx
 
@@ -167,6 +179,7 @@ class WakeWordSpotter:
         self.last_keyword = ""
         self._username_by_phrase: dict[str, str] = {}
         self._command_by_phrase: dict[str, str] = {}
+        self._session_wake_phrases: set[str] = set()
         lines: list[str] = []
         for username in usernames:
             for phrase in activation_phrases(username):
@@ -185,8 +198,25 @@ class WakeWordSpotter:
                         threshold=threshold,
                     )
                 )
+        for phrase in session_wake_phrases:
+            if phrase in self._username_by_phrase or phrase in self._session_wake_phrases:
+                continue
+            self._session_wake_phrases.add(phrase)
+            lines.append(
+                encode_keyword_line(
+                    phrase,
+                    bpe_path=model_dir / "bpe.model",
+                    tokens_path=model_dir / "tokens.txt",
+                    score=score,
+                    threshold=threshold,
+                )
+            )
         for phrase, command in VIDEO_COMMAND_PHRASES.items():
-            if phrase in self._username_by_phrase or phrase in self._command_by_phrase:
+            if (
+                phrase in self._username_by_phrase
+                or phrase in self._command_by_phrase
+                or phrase in self._session_wake_phrases
+            ):
                 raise ValueError(f"Frase de comando duplicada: {phrase!r}")
             self._command_by_phrase[phrase] = command
             lines.append(
@@ -201,8 +231,9 @@ class WakeWordSpotter:
         keywords_path = model_dir / "keywords.wake.txt"
         keywords_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         logger.info(
-            "Frases de activación: %s | comandos: %s",
-            ", ".join(self._username_by_phrase),
+            "Frases de activación: %s | sesión: %s | comandos: %s",
+            ", ".join(self._username_by_phrase) or "-",
+            ", ".join(sorted(self._session_wake_phrases)) or "-",
             ", ".join(self._command_by_phrase),
         )
 
@@ -242,22 +273,28 @@ class WakeWordSpotter:
             return False
         self.last_keyword = result.replace("_", " ")
         logger.info(
-            "KWS hit raw=%r → %r usuario=%s cmd=%s",
+            "KWS hit raw=%r → %r usuario=%s wake=%s cmd=%s",
             result,
             self.last_keyword,
             self.matched_username() or "-",
+            self.matched_session_wake(),
             self.matched_command() or "-",
         )
         self._new_stream()
         return True
 
     def matched_username(self) -> str:
-        """Username de la última frase detectada. Vacío si no hubo match."""
+        """Username/alias de la última frase detectada. Vacío si no hubo match."""
         return self._username_by_phrase.get(self.last_keyword, "")
+
+    def matched_session_wake(self) -> bool:
+        """True si la frase es wake genérico de sesión autenticada."""
+        return self.last_keyword in self._session_wake_phrases
 
     def matched_command(self) -> str:
         """Comando de la última frase (p.ej. detener_video). Vacío si no aplica."""
         return self._command_by_phrase.get(self.last_keyword, "")
+
     def matches_wav(self, wav_bytes: bytes) -> bool:
         """Pasa un WAV ya grabado por el spotter (enrolamiento)."""
         pcm = wav_bytes_to_pcm16(wav_bytes)
@@ -274,21 +311,36 @@ class WakeWordSpotter:
         return hit
 
 
-def create_wake_spotter(settings, usernames: list[str]) -> WakeWordSpotter:
+def create_wake_spotter(
+    settings,
+    usernames: list[str] | None = None,
+    *,
+    session_wake: bool = False,
+) -> WakeWordSpotter:
     if int(settings.bot_sample_rate) != 16000:
         raise RuntimeError("El keyword spotter local requiere BOT_SAMPLE_RATE=16000")
     model_dir = settings._resolve_path(settings.bot_kws_model_dir)
     ensure_kws_model(model_dir, settings.bot_kws_repo)
+    wake_phrases: list[str] = []
+    if session_wake:
+        raw = (getattr(settings, "bot_wake_phrases", "") or "").strip()
+        if raw:
+            wake_phrases = [p.strip() for p in raw.split(",") if p.strip()]
+        else:
+            wake_phrases = list(DEFAULT_SESSION_WAKE_PHRASES)
     spotter = WakeWordSpotter(
         model_dir=model_dir,
-        usernames=usernames,
+        usernames=usernames or [],
+        session_wake_phrases=wake_phrases,
         sample_rate=settings.bot_sample_rate,
         score=settings.bot_kws_score,
         threshold=settings.bot_kws_threshold,
     )
     logger.info(
-        "Wake local listo (%s usuarios, threshold=%s). STT solo después de activar.",
-        len(usernames),
+        "Wake local listo (aliases=%s session_wake=%s threshold=%s). "
+        "STT solo después de activar.",
+        len(usernames or []),
+        bool(wake_phrases),
         settings.bot_kws_threshold,
     )
     return spotter

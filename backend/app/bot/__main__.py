@@ -1,10 +1,13 @@
 """Loop principal del bot TORI: conversación por turnos (mic ↔ TTS exclusivos).
 
 Patrón como etiquetas-ia mobile:
-  listening → (mic ON) captura
+  login → listening → (mic ON) captura
   thinking  → (mic OFF) STT/LLM/TTS
   talking   → (mic OFF) reproduce
   listening → reopen mic + settle
+
+El usuario se autentica con usuario/contraseña (misma API que mobile/web).
+La wake word solo activa la charla («hola»), ya no identifica a la persona.
 """
 
 from __future__ import annotations
@@ -20,12 +23,14 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from app.bot.kws import create_wake_spotter
+from app.bot.login_gate import load_user_from_session, wait_for_login
 from app.bot.playback import MicStream, StreamPlayer, begin_listening, consume_tts, speak
 from app.bot.vad import UtteranceCapture
 from app.bot.video_player import is_showing_video, return_to_idle, show_idle
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models.user import User
+from app.repositories.user_repository import UserRepository
 from app.services.conversation_service import ConversationService
 
 logging.basicConfig(
@@ -72,11 +77,27 @@ def _listen(settings, mic: MicStream) -> None:
     begin_listening(mic, settle_ms=settings.bot_mic_settle_ms)
 
 
+def _session_user(db) -> User | None:
+    """Usuario de la sesión de login (relee DB por si cambió character/plan)."""
+    cached = load_user_from_session()
+    if cached is None:
+        return None
+    return UserRepository(db).get_by_id(cached.id)
+
+
 async def run_bot() -> None:
     settings = get_settings()
     if not settings.bot_enabled:
         logger.error("BOT_ENABLED=false")
         return
+
+    user = wait_for_login(settings)
+    logger.info(
+        "Autenticado como %s (%s) id=%s",
+        user.username,
+        user.full_name or user.alias,
+        user.id,
+    )
 
     capture = UtteranceCapture(
         sample_rate=settings.bot_sample_rate,
@@ -88,23 +109,16 @@ async def run_bot() -> None:
         end_call_ms=settings.bot_end_call_ms,
     )
 
-    db = SessionLocal()
-    try:
-        aliases = _active_aliases(db)
-    finally:
-        db.close()
-    spotter = create_wake_spotter(settings, aliases)
+    spotter = create_wake_spotter(settings, session_wake=True)
     try:
         show_idle()
     except Exception as exc:  # noqa: BLE001
         logger.warning("No se pudo abrir la ventana de inicio: %s", exc)
     logger.info(
-        "TORI listo. Frases=%s silence=%sms end_call=%sms post_tts=%sms settle=%sms",
-        len(aliases),
+        "TORI listo. Usuario=%s wake=sesión silence=%sms end_call=%sms",
+        user.username,
         settings.bot_silence_ms,
         settings.bot_end_call_ms,
-        settings.bot_post_tts_delay_ms,
-        settings.bot_mic_settle_ms,
     )
 
     with MicStream(
@@ -115,21 +129,8 @@ async def run_bot() -> None:
             await _idle_and_session(mic, capture, settings, spotter)
 
 
-def _active_aliases(db) -> list[str]:
-    rows = (
-        db.query(User.alias)
-        .filter(User.is_active.is_(True))
-        .order_by(User.alias)
-        .all()
-    )
-    aliases = [alias.strip() for (alias,) in rows if alias and str(alias).strip()]
-    if not aliases:
-        raise RuntimeError("No hay alias de usuarios activos para la frase de activación")
-    return aliases
-
-
 async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings, spotter) -> None:
-    logger.info("Estado=listening (VAD + wake local, sin STT)…")
+    logger.info("Estado=listening (VAD + wake «hola», sin STT)…")
     _listen(settings, mic)
     capture.listen_for_wake(
         mic,
@@ -139,34 +140,32 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
         trace=bool(getattr(settings, "bot_wake_trace", False)),
     )
     mic.stop()
-    alias = spotter.matched_username()
     command = spotter.matched_command()
+    wake = spotter.matched_session_wake() or bool(spotter.matched_username())
     logger.info(
-        "Wake word detectada (%s) alias=%s cmd=%s",
+        "Wake word detectada (%s) wake=%s cmd=%s",
         spotter.last_keyword,
-        alias or "-",
+        wake,
         command or "-",
     )
 
-    if not alias:
+    if not wake:
         if command == "detener_video" and is_showing_video():
             return_to_idle()
         elif command:
             logger.info("Comando %s fuera de contexto, ignorado", command)
         else:
-            logger.warning("Frase %r sin usuario activo.", spotter.last_keyword)
+            logger.warning("Frase %r no activa la sesión.", spotter.last_keyword)
         return
 
     db = SessionLocal()
     try:
-        user = (
-            db.query(User).filter(User.alias == alias, User.is_active.is_(True)).first()
-        )
+        user = _session_user(db)
         if user is None:
-            logger.warning("Frase %r sin usuario activo.", spotter.last_keyword)
+            logger.error("No hay sesión de usuario; volvé a iniciar el bot para loguearte")
             return
 
-        logger.info("Usuario=%s (%s)", user.id, user.full_name)
+        logger.info("Usuario=%s (%s)", user.id, user.full_name or user.username)
         service = ConversationService(db, settings)
 
         logger.info("Estado=thinking (intro)")
@@ -209,7 +208,7 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
                             settings, mic, service.tts, bye, character.voice_id, "detener video"
                         )
                     continue
-                if spotter.matched_username():
+                if spotter.matched_session_wake() or spotter.matched_username():
                     logger.info(
                         "Wake durante video (%s) → retomo conversación",
                         spotter.last_keyword,
@@ -261,7 +260,7 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
 
             logger.info("Estado=thinking")
             player = StreamPlayer(_tts_ext(settings))
-            result = await service.process_audio(
+            result = await service.process_audio_local(
                 conversation.id,
                 utterance,
                 user_text=known_text,
@@ -285,7 +284,6 @@ async def _idle_and_session(mic: MicStream, capture: UtteranceCapture, settings,
                         return_to_idle()
                     service.end_conversation(conversation.id)
                     break
-            # Si abrió video, la próxima vuelta entra al modo KWS sin STT.
     finally:
         mic.stop()
         db.close()
