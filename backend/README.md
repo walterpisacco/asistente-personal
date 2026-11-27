@@ -30,9 +30,17 @@ El bot local (`python -m app.bot`) elige el camino con `CONVERSATION_MODE` en `.
 
 ### Métricas de llamada (`call_sessions`)
 
-Al colgar (finalizar, silencio o error) se inserta una fila en `call_sessions` con tiempos, turnos y costo estimado (`CALL_METRICS_*` / `CALL_METRICS_PRICE_*`).
+Al colgar (finalizar, silencio o error) se inserta una fila en `call_sessions` con tiempos, turnos y costo estimado (`CALL_METRICS_*`).
 
-En Realtime el costo STT/TTS “clásico” es aproximado: el audio lo factura OpenAI Realtime, no Deepgram/ElevenLabs. En pipeline el desglose STT/LLM/TTS sí corresponde a esos providers.
+El cálculo de `estimated_cost` depende del modo:
+
+- **Pipeline**: `CALL_METRICS_PRICE_LLM_*` + `CALL_METRICS_PRICE_STT_PER_MINUTE` + `CALL_METRICS_PRICE_TTS_PER_1K_CHARS`.
+- **Realtime** (`gpt-realtime-2.1`): tarifas OpenAI por modalidad (USD / 1M tokens) vía `CALL_METRICS_PRICE_RT_*`:
+  - Audio in/out: $32 / $64
+  - Text in/out: $4 / $24
+  - Cached audio/text in: $0.40
+  - Transcribe (`gpt-4o-mini-transcribe`): `CALL_METRICS_PRICE_RT_TRANSCRIBE_PER_MINUTE` (~$0.003/min)
+- El desglose queda en `providers_json.cost_breakdown` para comparar sesiones.
 
 ## Endpoints
 

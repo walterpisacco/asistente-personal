@@ -48,6 +48,13 @@ class CallMetricsTracker:
     tts_requests: int = 0
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
+    # Desglose Realtime (audio vs text); en pipeline quedan en 0.
+    audio_input_tokens: int = 0
+    audio_output_tokens: int = 0
+    text_input_tokens: int = 0
+    text_output_tokens: int = 0
+    audio_cached_input_tokens: int = 0
+    text_cached_input_tokens: int = 0
     stt_audio_seconds: float = 0.0
     tts_characters: int = 0
     interruptions: int = 0
@@ -55,6 +62,7 @@ class CallMetricsTracker:
     disconnect_reason: str = "unknown"
     providers: dict[str, Any] = field(default_factory=dict)
     turn_timings: list[dict[str, Any]] = field(default_factory=list)
+    last_cost_breakdown: dict[str, Any] = field(default_factory=dict)
     _llm_latencies: list[float] = field(default_factory=list)
     _tts_latencies: list[float] = field(default_factory=list)
     _stt_latencies: list[float] = field(default_factory=list)
@@ -216,9 +224,36 @@ class CallMetricsTracker:
         completion_tokens: int = 0,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
+        audio_input_tokens: int = 0,
+        audio_output_tokens: int = 0,
+        text_input_tokens: int = 0,
+        text_output_tokens: int = 0,
+        audio_cached_input_tokens: int = 0,
+        text_cached_input_tokens: int = 0,
     ) -> None:
-        prompt = int(prompt_tokens or 0) or int(input_tokens or 0)
-        completion = int(completion_tokens or 0) or int(output_tokens or 0)
+        audio_in = max(0, int(audio_input_tokens or 0))
+        audio_out = max(0, int(audio_output_tokens or 0))
+        text_in = max(0, int(text_input_tokens or 0))
+        text_out = max(0, int(text_output_tokens or 0))
+        audio_cached = max(0, int(audio_cached_input_tokens or 0))
+        text_cached = max(0, int(text_cached_input_tokens or 0))
+
+        self.audio_input_tokens += audio_in
+        self.audio_output_tokens += audio_out
+        self.text_input_tokens += text_in
+        self.text_output_tokens += text_out
+        self.audio_cached_input_tokens += audio_cached
+        self.text_cached_input_tokens += text_cached
+
+        detailed_in = audio_in + text_in + audio_cached + text_cached
+        detailed_out = audio_out + text_out
+        prompt = int(prompt_tokens or 0) or int(input_tokens or 0) or detailed_in
+        completion = int(completion_tokens or 0) or int(output_tokens or 0) or detailed_out
+        # Si vino desglose, preferir sumas detalladas para los totales.
+        if detailed_in:
+            prompt = detailed_in
+        if detailed_out:
+            completion = detailed_out
         self.total_prompt_tokens += max(0, prompt)
         self.total_completion_tokens += max(0, completion)
 
@@ -226,6 +261,11 @@ class CallMetricsTracker:
         self.interruptions += 1
 
     def estimate_cost(self) -> Decimal:
+        if (self.mode or "").strip().lower() == "realtime":
+            return self._estimate_realtime_cost()
+        return self._estimate_pipeline_cost()
+
+    def _estimate_pipeline_cost(self) -> Decimal:
         s = self.settings
         llm_in = (self.total_prompt_tokens / 1_000_000.0) * float(
             s.call_metrics_price_llm_input_per_1m
@@ -237,7 +277,96 @@ class CallMetricsTracker:
         tts = (self.tts_characters / 1000.0) * float(
             s.call_metrics_price_tts_per_1k_chars
         )
-        return Decimal(str(round(llm_in + llm_out + stt + tts, 6)))
+        total = llm_in + llm_out + stt + tts
+        self.last_cost_breakdown = {
+            "mode": "pipeline",
+            "llm_input": round(llm_in, 6),
+            "llm_output": round(llm_out, 6),
+            "stt": round(stt, 6),
+            "tts": round(tts, 6),
+            "total": round(total, 6),
+        }
+        return Decimal(str(round(total, 6)))
+
+    def _estimate_realtime_cost(self) -> Decimal:
+        """Costos OpenAI Realtime (audio/text por 1M) + transcribe opcional."""
+        s = self.settings
+        per_m = 1_000_000.0
+        audio_in = (self.audio_input_tokens / per_m) * float(
+            s.call_metrics_price_rt_audio_in_per_1m
+        )
+        audio_out = (self.audio_output_tokens / per_m) * float(
+            s.call_metrics_price_rt_audio_out_per_1m
+        )
+        text_in = (self.text_input_tokens / per_m) * float(
+            s.call_metrics_price_rt_text_in_per_1m
+        )
+        text_out = (self.text_output_tokens / per_m) * float(
+            s.call_metrics_price_rt_text_out_per_1m
+        )
+        audio_cached = (self.audio_cached_input_tokens / per_m) * float(
+            s.call_metrics_price_rt_audio_cached_in_per_1m
+        )
+        text_cached = (self.text_cached_input_tokens / per_m) * float(
+            s.call_metrics_price_rt_text_cached_in_per_1m
+        )
+        # Fallback si la API no mandó desglose: tratar totales como text (más barato)
+        # para no inflar; mejor subestimar que inventar audio.
+        fallback_in = 0.0
+        fallback_out = 0.0
+        detailed = (
+            self.audio_input_tokens
+            + self.audio_output_tokens
+            + self.text_input_tokens
+            + self.text_output_tokens
+            + self.audio_cached_input_tokens
+            + self.text_cached_input_tokens
+        )
+        if detailed == 0 and (self.total_prompt_tokens or self.total_completion_tokens):
+            fallback_in = (self.total_prompt_tokens / per_m) * float(
+                s.call_metrics_price_rt_text_in_per_1m
+            )
+            fallback_out = (self.total_completion_tokens / per_m) * float(
+                s.call_metrics_price_rt_text_out_per_1m
+            )
+        transcribe = (self.stt_audio_seconds / 60.0) * float(
+            s.call_metrics_price_rt_transcribe_per_minute
+        )
+        total = (
+            audio_in
+            + audio_out
+            + text_in
+            + text_out
+            + audio_cached
+            + text_cached
+            + fallback_in
+            + fallback_out
+            + transcribe
+        )
+        self.last_cost_breakdown = {
+            "mode": "realtime",
+            "audio_input": round(audio_in, 6),
+            "audio_output": round(audio_out, 6),
+            "text_input": round(text_in, 6),
+            "text_output": round(text_out, 6),
+            "audio_cached_input": round(audio_cached, 6),
+            "text_cached_input": round(text_cached, 6),
+            "fallback_text_input": round(fallback_in, 6),
+            "fallback_text_output": round(fallback_out, 6),
+            "transcribe": round(transcribe, 6),
+            "tokens": {
+                "audio_in": self.audio_input_tokens,
+                "audio_out": self.audio_output_tokens,
+                "text_in": self.text_input_tokens,
+                "text_out": self.text_output_tokens,
+                "audio_cached_in": self.audio_cached_input_tokens,
+                "text_cached_in": self.text_cached_input_tokens,
+                "prompt_total": self.total_prompt_tokens,
+                "completion_total": self.total_completion_tokens,
+            },
+            "total": round(total, 6),
+        }
+        return Decimal(str(round(total, 6)))
 
     def _close_idle(self) -> None:
         if self._idle_since_mono is None:
@@ -265,8 +394,10 @@ class CallMetricsTracker:
             ttfa = int(
                 (self.first_bot_audio_time - self.start_time).total_seconds() * 1000
             )
+        estimated = self.estimate_cost()
         providers = dict(self.providers)
         providers.setdefault("mode", self.mode)
+        providers["cost_breakdown"] = dict(self.last_cost_breakdown)
         return CallSessions(
             conversation_id=self.conversation_id,
             start_time=self.start_time,
@@ -284,7 +415,7 @@ class CallMetricsTracker:
             total_completion_tokens=self.total_completion_tokens,
             stt_audio_seconds=round(self.stt_audio_seconds, 3),
             tts_characters=self.tts_characters,
-            estimated_cost=self.estimate_cost(),
+            estimated_cost=estimated,
             avg_llm_latency_ms=_avg(self._llm_latencies),
             avg_tts_latency_ms=_avg(self._tts_latencies),
             avg_stt_latency_ms=_avg(self._stt_latencies),

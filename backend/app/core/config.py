@@ -146,10 +146,20 @@ class Settings(BaseSettings):
     call_metrics_mysql_user: str = ""
     call_metrics_mysql_password: str = ""
     call_metrics_mysql_database: str = ""
+    # Pipeline (STT/LLM/TTS clásicos)
     call_metrics_price_llm_input_per_1m: float = 0.40
     call_metrics_price_llm_output_per_1m: float = 1.60
     call_metrics_price_stt_per_minute: float = 0.024
     call_metrics_price_tts_per_1k_chars: float = 0.013
+    # Realtime gpt-realtime-2.1 (USD / 1M tokens) — OpenAI pricing
+    call_metrics_price_rt_audio_in_per_1m: float = 32.0
+    call_metrics_price_rt_audio_out_per_1m: float = 64.0
+    call_metrics_price_rt_text_in_per_1m: float = 4.0
+    call_metrics_price_rt_text_out_per_1m: float = 24.0
+    call_metrics_price_rt_audio_cached_in_per_1m: float = 0.40
+    call_metrics_price_rt_text_cached_in_per_1m: float = 0.40
+    # Transcripción embebida (gpt-4o-mini-transcribe) ≈ USD / minuto
+    call_metrics_price_rt_transcribe_per_minute: float = 0.003
 
     def _resolve_path(self, relative: str) -> Path:
         path = Path(relative)

@@ -347,35 +347,49 @@ class RealtimeVoiceSession:
         usage = response.get("usage") or event.get("usage") or {}
         if not isinstance(usage, dict):
             return
-        prompt = (
-            usage.get("input_tokens")
-            or usage.get("prompt_tokens")
-            or usage.get("total_tokens")
-            or 0
-        )
-        completion = (
-            usage.get("output_tokens")
-            or usage.get("completion_tokens")
-            or 0
-        )
-        # En Realtime a veces viene desglose input/output dentro de usage.
+
+        def _i(value: Any) -> int:
+            try:
+                return max(0, int(value or 0))
+            except (TypeError, ValueError):
+                return 0
+
         details_in = usage.get("input_token_details") or {}
         details_out = usage.get("output_token_details") or {}
-        if isinstance(details_in, dict) and not usage.get("input_tokens"):
-            prompt = int(details_in.get("text_tokens") or 0) + int(
-                details_in.get("audio_tokens") or 0
-            )
-        if isinstance(details_out, dict) and not usage.get("output_tokens"):
-            completion = int(details_out.get("text_tokens") or 0) + int(
-                details_out.get("audio_tokens") or 0
-            )
-        try:
-            self._metrics.add_usage(
-                input_tokens=int(prompt or 0),
-                output_tokens=int(completion or 0),
-            )
-        except (TypeError, ValueError):
-            pass
+        if not isinstance(details_in, dict):
+            details_in = {}
+        if not isinstance(details_out, dict):
+            details_out = {}
+
+        audio_in = _i(details_in.get("audio_tokens"))
+        text_in = _i(details_in.get("text_tokens"))
+        # Cached puede venir anidado o plano según versión de la API.
+        cached_in = details_in.get("cached_tokens_details") or {}
+        if not isinstance(cached_in, dict):
+            cached_in = {}
+        audio_cached = _i(cached_in.get("audio_tokens")) or _i(
+            details_in.get("cached_audio_tokens")
+        )
+        text_cached = _i(cached_in.get("text_tokens")) or _i(
+            details_in.get("cached_text_tokens")
+        )
+        # Si solo viene cached_tokens total sin desglose, no lo atribuimos a audio.
+        audio_out = _i(details_out.get("audio_tokens"))
+        text_out = _i(details_out.get("text_tokens"))
+
+        prompt = _i(usage.get("input_tokens") or usage.get("prompt_tokens"))
+        completion = _i(usage.get("output_tokens") or usage.get("completion_tokens"))
+
+        self._metrics.add_usage(
+            input_tokens=prompt,
+            output_tokens=completion,
+            audio_input_tokens=audio_in,
+            audio_output_tokens=audio_out,
+            text_input_tokens=text_in,
+            text_output_tokens=text_out,
+            audio_cached_input_tokens=audio_cached,
+            text_cached_input_tokens=text_cached,
+        )
         self._metrics.mark_llm_request()
     async def _maybe_handle_function_calls(self, event: dict[str, Any]) -> None:
         response = event.get("response") or {}
