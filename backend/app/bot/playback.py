@@ -193,32 +193,46 @@ def begin_listening(mic: MicStream, settle_ms: int = 450) -> None:
 
 
 class StreamPlayer:
-    """Reproduce TTS apenas llega audio. Si no hay ffplay, junta el archivo y lo toca al final."""
+    """Reproduce TTS en streaming vía ffplay.
 
-    def __init__(self, extension: str = "mp3") -> None:
-        self.extension = extension
+    Acumula un preroll antes de abrir ffplay: con MP3 + pipe, arrancar en el
+    primer chunk con nobuffer/low_delay corta el comienzo del audio.
+    """
+
+    def __init__(self, extension: str = "mp3", *, preroll_bytes: int | None = None) -> None:
+        self.extension = (extension or "mp3").lstrip(".").lower()
         self.played = False
         self._proc: subprocess.Popen | None = None
-        self._fallback = bytearray()
+        self._buffer = bytearray()
+        # ~48 KiB de MP3 ≈ headers + frames estables para que ffplay no saltee el inicio.
+        if preroll_bytes is not None:
+            self._preroll = max(0, int(preroll_bytes))
+        elif self.extension == "wav":
+            self._preroll = 8_192
+        else:
+            self._preroll = 48_000
+        self._started = False
+        self._ffplay = shutil.which("ffplay")
 
     def start(self) -> None:
-        if self._proc is not None or shutil.which("ffplay") is None:
+        """Compat: el arranque real ocurre en write() tras el preroll."""
+        return
+
+    def _spawn_ffplay(self) -> None:
+        if self._proc is not None or not self._ffplay:
             return
+        # Sin nobuffer/low_delay: esos flags tiraban los primeros frames del MP3.
         self._proc = subprocess.Popen(
             [
-                "ffplay",
+                self._ffplay,
                 "-nodisp",
                 "-autoexit",
                 "-loglevel",
                 "quiet",
-                "-fflags",
-                "nobuffer",
-                "-flags",
-                "low_delay",
                 "-probesize",
-                "32768",
+                "65536",
                 "-analyzeduration",
-                "0",
+                "100000",
                 "-i",
                 "pipe:0",
             ],
@@ -227,18 +241,49 @@ class StreamPlayer:
             stderr=subprocess.DEVNULL,
         )
 
+    def _write_proc(self, data: bytes) -> bool:
+        if self._proc is None or self._proc.stdin is None or not data:
+            return False
+        try:
+            self._proc.stdin.write(data)
+            self._proc.stdin.flush()
+            return True
+        except BrokenPipeError:
+            logger.warning("ffplay pipe rota; paso a fallback en memoria")
+            self._proc = None
+            return False
+
     def write(self, chunk: bytes) -> None:
-        if self._proc is not None and self._proc.stdin is not None:
-            try:
-                self._proc.stdin.write(chunk)
-                self._proc.stdin.flush()
+        if not chunk:
+            return
+        if self._started and self._proc is not None:
+            if self._write_proc(chunk):
                 return
-            except BrokenPipeError:
-                self._proc = None
-        self._fallback.extend(chunk)
+            # Pipe caída: acumular el resto y reproducir al final.
+            self._buffer.extend(chunk)
+            return
+
+        self._buffer.extend(chunk)
+        if self._started:
+            return
+        if len(self._buffer) < self._preroll and self._ffplay:
+            return
+        # Suficiente preroll (o sin ffplay → se toca todo al finish).
+        if not self._ffplay:
+            self._started = True
+            return
+        self._spawn_ffplay()
+        self._started = True
+        buffered = bytes(self._buffer)
+        self._buffer.clear()
+        if not self._write_proc(buffered):
+            self._buffer.extend(buffered)
 
     def finish(self) -> None:
         if self._proc is not None and self._proc.stdin is not None:
+            if self._buffer:
+                self._write_proc(bytes(self._buffer))
+                self._buffer.clear()
             try:
                 self._proc.stdin.close()
             except BrokenPipeError:
@@ -247,31 +292,28 @@ class StreamPlayer:
             self._proc = None
             self.played = True
             return
-        if self._fallback:
-            play_audio_bytes(bytes(self._fallback), extension=self.extension)
-            self._fallback.clear()
+        if self._buffer:
+            play_audio_bytes(bytes(self._buffer), extension=self.extension)
+            self._buffer.clear()
             self.played = True
 
 
 async def consume_tts(tts, text: str, voice_id: str, player: StreamPlayer | None):
     """Lee el TTS por chunks. Devuelve (audio, ttfb_ms, download_ms).
 
-    Con un proveedor que streamea, el player arranca en el primer chunk.
+    Con streaming, el player arranca solo tras el preroll (no en el 1er chunk).
     `download_ms` no incluye lo que tarda en terminar de sonar.
     """
     parts: list[bytes] = []
     t0 = time.perf_counter()
     ttfb_ms = 0
     started = False
-    stream = bool(getattr(tts, "streams_audio", False))
     async for chunk in tts.iter_audio(text, voice_id):
         if not chunk:
             continue
         if not started:
             ttfb_ms = int((time.perf_counter() - t0) * 1000)
             started = True
-            if player is not None and stream:
-                player.start()
         parts.append(chunk)
         if player is not None:
             player.write(chunk)

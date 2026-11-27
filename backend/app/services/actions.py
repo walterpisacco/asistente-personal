@@ -104,8 +104,10 @@ _LIST_PROJECTS_RE = re.compile(
 
 _LIST_TASK_VERBS = (
     r"lista(?:me|rme)?|listá|listar|"
+    # STT frecuente: "listame" → "li", "me li", "lis"
+    r"\bli\b|\blis\b|"
     r"mostr(?:arme|ame|ar|á|a)|mu[eé]str(?:ame|a)|"
-    r"dame|d[eé]cime|dime|dec[ií]|"
+    r"dame|d[eé]cirme|d[eé]cime|dime|dec[ií]r|"
     r"ver|ves|"
     r"cu[aá]les?\s+son|"
     r"otra\s+vez|de\s+nuevo|repet[ií]"
@@ -117,6 +119,11 @@ _LIST_TASKS_RE = re.compile(
     rf"\b(?:{_LIST_TASK_VERBS})\b.*\btareas?\b"
     r"|\bqu[eé]\s+tareas?\b"
     r"|\btareas?\b.*\b(?:lista|listá|listar|ten[eé]s|tengo|otra\s+vez|de\s+nuevo)\b"
+    # "tengo alguna tarea pendiente?", "tareas pendientes", "si tengo tareas"
+    r"|\b(?:tengo|ten[eé]s|hay)\b.*\btareas?\b"
+    r"|\btareas?\s+pendientes?\b"
+    r"|\balguna\s+tarea\b"
+    r"|\bmis\s+tareas\b"
     r"|^\s*(?:(?:las?|mis|las\s+mismas)\s+)?tareas?\s*[.!?]*\s*$"
     r"|\btareas\s+(?:de|del|para)\b"
     r")"

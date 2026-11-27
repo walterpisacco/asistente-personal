@@ -860,30 +860,121 @@ class ConversationService:
             {"role": m.role, "content": m.text}
             for m in self.conversations.get_by_id(conversation.id).messages  # type: ignore[union-attr]
         ]
-        system_prompt = build_bot_llm_system_prompt(
-            character,
-            user,
-            self.settings.resolved_bot_system_prompt,
-            self._actions(),
-        )
 
+        proyect_name = None
+        if user is not None and proyect_id is not None:
+            selected_row = ProyectsRepository(self.db).get_active_for_user(
+                int(user.id), int(proyect_id)
+            )
+            proyect_name = selected_row.name if selected_row is not None else None
+
+        catalog = self._actions()
         t1 = time.perf_counter()
-        raw_assistant = await self.llm.generate(history, system_prompt)
-        latency["llm_ms"] = int((time.perf_counter() - t1) * 1000)
-
-        assistant_text, action_result = await run_llm_action(
-            self.db,
-            self.settings,
-            raw_assistant_text=raw_assistant,
+        decision = await self.intent.classify(
+            user_text,
+            actions=catalog,
             user=user,
-            user_text=user_text,
+            db=self.db,
             proyect_id=proyect_id,
+            proyect_name=proyect_name,
+            pending=pending_intent_context(user),
+            history=history,
         )
-        if not assistant_text.strip():
+        latency["intent_ms"] = int((time.perf_counter() - t1) * 1000)
+        logger.info(
+            "Bot turn text=%r proyect=%s name=%r intent=%s source=%s valor=%r",
+            user_text,
+            proyect_id,
+            proyect_name,
+            decision.clave,
+            decision.source,
+            decision.valor,
+        )
+
+        action_result = None
+        assistant_text = ""
+        selected_proyect = str(proyect_id) if proyect_id is not None else ""
+
+        if decision.is_action:
+            valor = decision.valor
+            valor1 = decision.valor1
+            if decision.clave in (
+                "agregar_tarea",
+                "listar_tareas",
+                "eliminar_tarea",
+                "eliminar_mensajes",
+            ):
+                valor1 = selected_proyect
+            if decision.clave in (
+                "agregar_recordatorio",
+                "listar_recordatorios",
+                "eliminar_recordatorio",
+                "eliminar_proyecto",
+            ):
+                valor1 = ""
+            if decision.clave == "listar_tareas":
+                valor = selected_proyect
+            if decision.clave == "agregar_tarea" and not valor:
+                ext_name, _ext_proj = extract_add_task_parts(user_text)
+                valor = ext_name
+            if decision.clave == "eliminar_tarea" and not valor:
+                valor = extract_delete_task_name(user_text)
+            if decision.clave == "agregar_proyecto" and not valor:
+                valor = extract_add_project_name(user_text)
+            if decision.clave == "seleccionar_proyecto" and not valor:
+                valor = extract_select_project_name(user_text)
+            if decision.clave == "eliminar_proyecto" and not valor:
+                valor = extract_delete_project_name(user_text)
+            if decision.clave == "agregar_recordatorio" and not valor:
+                valor = user_text
+            action_result = await ActionDispatcher(self.db, self.settings).dispatch(
+                clave=decision.clave,
+                valor=valor,
+                user=user,
+                user_text=user_text,
+                fecha=decision.fecha or None,
+                confirm=decision.confirm,
+                valor1=valor1,
+                recurrencia=getattr(decision, "recurrencia", None) or None,
+                dias=getattr(decision, "dias", None) or None,
+            )
+            assistant_text = (
+                (action_result.spoken_override if action_result else None) or ""
+            )
+            latency["llm_ms"] = 0
+            if action_result is None:
+                decision = IntentDecision(clave="none", source=decision.source)
+
+        if not decision.is_action or action_result is None:
+            system_prompt = build_bot_llm_system_prompt(
+                character,
+                user,
+                self.settings.resolved_bot_system_prompt,
+                catalog,
+            )
+            t_llm = time.perf_counter()
+            raw_assistant = await self.llm.generate(history, system_prompt)
+            latency["llm_ms"] = int((time.perf_counter() - t_llm) * 1000)
+            assistant_text, action_result = await run_llm_action(
+                self.db,
+                self.settings,
+                raw_assistant_text=raw_assistant,
+                user=user,
+                user_text=user_text,
+                proyect_id=proyect_id,
+            )
+
+        if action_result and action_result.extra and action_result.extra.get("display"):
+            # Para TTS preferimos el spoken; el display es para UI.
+            if not (assistant_text or "").strip():
+                assistant_text = str(action_result.extra["display"])
+        if not (assistant_text or "").strip():
             assistant_text = "Dale."
 
         logger.info("User: %s", user_text)
         logger.info("TORI: %s", assistant_text)
+        if action_result:
+            logger.info("Action: %s", action_result.to_dict())
         audio_content, ttfb_ms, tts_ms = await consume_tts(
             self.tts, assistant_text, character.voice_id, player
         )
@@ -949,7 +1040,13 @@ class ConversationService:
     def end_conversation(
         self, conversation_id: str, *, disconnect_reason: str = "ended"
     ) -> None:
-        self.conversations.update_status(conversation_id, "ended")
+        """Marca la conversación ended y flushea call_sessions si aún no se hizo."""
+        try:
+            self.conversations.update_status(conversation_id, "ended")
+        except Exception:
+            logger.exception(
+                "No se pudo marcar conversación ended id=%s", conversation_id
+            )
         tracker = self._call_metrics.pop(conversation_id, None)
         if tracker is not None:
             tracker.flush(self.db, disconnect_reason=disconnect_reason)

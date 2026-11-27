@@ -340,6 +340,8 @@ async def _realtime_session(mic: MicStream, capture: UtteranceCapture, settings,
 
 async def _pipeline_session(mic: MicStream, capture: UtteranceCapture, settings, spotter) -> None:
     db = SessionLocal()
+    service: ConversationService | None = None
+    conversation = None
     try:
         user = _session_user(db)
         if user is None:
@@ -471,7 +473,26 @@ async def _pipeline_session(mic: MicStream, capture: UtteranceCapture, settings,
                         conversation.id, disconnect_reason="finalizar"
                     )
                     break
+    except Exception:
+        logger.exception("Error en sesión pipeline")
+        if service is not None and conversation is not None:
+            try:
+                service.end_conversation(
+                    conversation.id, disconnect_reason="error"
+                )
+            except Exception:
+                logger.exception("No se pudo flushear call_sessions tras error")
+        raise
     finally:
+        # Si cortaron con Ctrl+C / salida sin silencio ni finalizar, igual persistir.
+        if service is not None and conversation is not None:
+            try:
+                if conversation.id in getattr(service, "_call_metrics", {}):
+                    service.end_conversation(
+                        conversation.id, disconnect_reason="aborted"
+                    )
+            except Exception:
+                logger.exception("No se pudo flushear call_sessions en finally")
         mic.stop()
         db.close()
 
