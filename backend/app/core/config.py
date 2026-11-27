@@ -146,6 +146,10 @@ class Settings(BaseSettings):
     call_metrics_mysql_user: str = ""
     call_metrics_mysql_password: str = ""
     call_metrics_mysql_database: str = ""
+    call_metrics_price_llm_input_per_1m: float = 0.40
+    call_metrics_price_llm_output_per_1m: float = 1.60
+    call_metrics_price_stt_per_minute: float = 0.024
+    call_metrics_price_tts_per_1k_chars: float = 0.013
 
     def _resolve_path(self, relative: str) -> Path:
         path = Path(relative)

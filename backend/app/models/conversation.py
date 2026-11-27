@@ -32,3 +32,8 @@ class Conversation(Base):
         order_by="ConversationMessage.created_at",
         cascade="all, delete-orphan",
     )
+    call_sessions = relationship(
+        "CallSessions",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+    )

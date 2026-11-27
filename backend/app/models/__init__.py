@@ -1,5 +1,6 @@
 from app.models.actions import Action
 from app.models.avatars import Avatar
+from app.models.call_sessions import CallSessions
 from app.models.character import Character
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
@@ -14,6 +15,7 @@ from app.models.user_profile import UserProfile
 __all__ = [
     "Action",
     "Avatar",
+    "CallSessions",
     "Character",
     "Conversation",
     "ConversationMessage",

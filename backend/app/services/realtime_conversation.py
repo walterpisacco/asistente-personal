@@ -26,6 +26,7 @@ from app.repositories.character_repository import CharacterRepository
 from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.user_repository import UserRepository
 from app.services.actions import ActionDispatcher
+from app.services.call_metrics_service import CallMetricsTracker
 from app.services.conversation_service import build_bot_llm_system_prompt
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,10 @@ class RealtimeVoiceSession:
         self._pending_action: dict[str, Any] | None = None
         self._audio_q: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._events_task: asyncio.Task | None = None
+        self._metrics: CallMetricsTracker | None = None
+        self._disconnect_reason: str = "unknown"
+        self._greeting_pending = True
+        self._response_started_mono: float | None = None
 
     @property
     def conversation(self) -> Conversation | None:
@@ -186,6 +191,17 @@ class RealtimeVoiceSession:
             or "gpt-4o-mini-transcribe"
         ).strip()
         rate = int(self.settings.openai_realtime_sample_rate or 24000)
+        self._metrics = CallMetricsTracker.start(
+            saved.id,
+            self.settings,
+            mode="realtime",
+            providers={
+                "conversation": "openai_realtime",
+                "model": model,
+                "transcription_model": tx_model,
+                "voice": voice,
+            },
+        )
 
         self._conn = OpenAIRealtimeConnection(
             api_key=self.settings.openai_api_key,
@@ -231,6 +247,8 @@ class RealtimeVoiceSession:
         except asyncio.TimeoutError:
             logger.warning("Realtime session.updated no llegó a tiempo; sigo igual")
         # Saludo inicial del modelo.
+        self._greeting_pending = True
+        self._response_started_mono = time.monotonic()
         await self._conn.create_response()
         self._last_speech_at = time.monotonic()
         return saved
@@ -255,9 +273,13 @@ class RealtimeVoiceSession:
         if et in ("session.updated", "session.created"):
             self._session_ready.set()
             self._last_speech_at = time.monotonic()
+            if self._metrics is not None:
+                self._metrics.mark_answered()
         elif et in ("response.output_audio.delta", "response.audio.delta"):
             delta = event.get("delta") or ""
             if delta:
+                if self._metrics is not None:
+                    self._metrics.mark_first_bot_audio()
                 self._playing = True
                 self._last_speech_at = time.monotonic()
                 await self._audio_q.put(base64.b64decode(delta))
@@ -267,6 +289,7 @@ class RealtimeVoiceSession:
             "response.done",
         ):
             if et == "response.done":
+                self._ingest_response_usage(event)
                 await self._maybe_handle_function_calls(event)
             self._playing = False
             self._last_speech_at = time.monotonic()
@@ -286,20 +309,74 @@ class RealtimeVoiceSession:
                 self._assistant_transcript = text
                 self._persist_message("assistant", text)
                 logger.info("TORI (realtime): %s", text)
+                if self._metrics is not None:
+                    llm_ms = None
+                    if self._response_started_mono is not None:
+                        llm_ms = int(
+                            (time.monotonic() - self._response_started_mono) * 1000
+                        )
+                    self._metrics.mark_bot_turn(text=text, llm_ms=llm_ms)
+                    self._greeting_pending = False
+                    self._response_started_mono = None
         elif et == "conversation.item.input_audio_transcription.completed":
             text = (event.get("transcript") or "").strip()
             if text:
                 self._user_transcript = text
                 self._persist_message("user", text)
                 logger.info("User (realtime): %s", text)
+                if self._metrics is not None:
+                    self._metrics.mark_user_turn(text=text)
+                self._response_started_mono = time.monotonic()
         elif et == "input_audio_buffer.speech_started":
             self._last_speech_at = time.monotonic()
+            if self._metrics is not None:
+                self._metrics.mark_speech_started()
             # Si el mic filtró mal y llegó eco, no interrumpimos la reproducción local.
         elif et == "input_audio_buffer.speech_stopped":
             self._last_speech_at = time.monotonic()
+            if self._metrics is not None:
+                self._metrics.mark_speech_stopped()
         elif et == "error":
             logger.error("Realtime event error: %s", event.get("error") or event)
+            self._disconnect_reason = "error"
 
+    def _ingest_response_usage(self, event: dict[str, Any]) -> None:
+        if self._metrics is None:
+            return
+        response = event.get("response") or {}
+        usage = response.get("usage") or event.get("usage") or {}
+        if not isinstance(usage, dict):
+            return
+        prompt = (
+            usage.get("input_tokens")
+            or usage.get("prompt_tokens")
+            or usage.get("total_tokens")
+            or 0
+        )
+        completion = (
+            usage.get("output_tokens")
+            or usage.get("completion_tokens")
+            or 0
+        )
+        # En Realtime a veces viene desglose input/output dentro de usage.
+        details_in = usage.get("input_token_details") or {}
+        details_out = usage.get("output_token_details") or {}
+        if isinstance(details_in, dict) and not usage.get("input_tokens"):
+            prompt = int(details_in.get("text_tokens") or 0) + int(
+                details_in.get("audio_tokens") or 0
+            )
+        if isinstance(details_out, dict) and not usage.get("output_tokens"):
+            completion = int(details_out.get("text_tokens") or 0) + int(
+                details_out.get("audio_tokens") or 0
+            )
+        try:
+            self._metrics.add_usage(
+                input_tokens=int(prompt or 0),
+                output_tokens=int(completion or 0),
+            )
+        except (TypeError, ValueError):
+            pass
+        self._metrics.mark_llm_request()
     async def _maybe_handle_function_calls(self, event: dict[str, Any]) -> None:
         response = event.get("response") or {}
         outputs = response.get("output") or []
@@ -365,6 +442,7 @@ class RealtimeVoiceSession:
         self._pending_action = payload
         if payload.get("end_session"):
             self._ended = True
+            self._disconnect_reason = "finalizar"
         spoken = (action_result.spoken_override or "").strip()
         return {
             "ok": True,
@@ -430,16 +508,31 @@ class RealtimeVoiceSession:
         idle_ms = (time.monotonic() - self._last_speech_at) * 1000.0
         return idle_ms >= max(1000, int(end_call_ms))
 
-    def end(self) -> None:
+    def set_disconnect_reason(self, reason: str) -> None:
+        if reason:
+            self._disconnect_reason = reason
+
+    def flush_metrics(self, *, disconnect_reason: str | None = None) -> None:
+        if self._metrics is None:
+            return
+        reason = disconnect_reason or self._disconnect_reason or "unknown"
+        self._metrics.flush(self.db, disconnect_reason=reason)
+
+    def end(self, *, disconnect_reason: str | None = None) -> None:
         self._ended = True
+        if disconnect_reason:
+            self._disconnect_reason = disconnect_reason
         if self._conversation is not None:
             try:
                 self.conversations.update_status(self._conversation.id, "ended")
             except Exception:
                 logger.exception("No se pudo marcar conversación ended")
+        self.flush_metrics()
 
     async def close(self) -> None:
         self._ended = True
+        # Si end() no corrió (error temprano), igual persistimos métricas.
+        self.flush_metrics()
         if self._events_task is not None:
             self._events_task.cancel()
             try:

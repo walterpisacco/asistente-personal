@@ -43,6 +43,7 @@ from app.services.actions import (
     pending_intent_context,
     run_llm_action,
 )
+from app.services.call_metrics_service import CallMetricsTracker
 from app.services.intent_router import IntentDecision, IntentRouter
 from app.services.audio_service import AudioService
 from app.services.metrics_service import MetricsService
@@ -180,6 +181,7 @@ class ConversationService:
         self.intent = IntentRouter(self.llm, self.settings)
         self.stt = create_stt_provider(self.settings)
         self.tts = create_tts_provider(self.settings)
+        self._call_metrics: dict[str, CallMetricsTracker] = {}
 
     def _actions(self) -> list[Action]:
         return ActionRepository(self.db).list_all()
@@ -715,6 +717,18 @@ class ConversationService:
             device_id=device_id,
         )
         saved = self.conversations.create(conversation)
+        tracker = CallMetricsTracker.start(
+            saved.id,
+            self.settings,
+            mode="pipeline",
+            providers={
+                "conversation": "pipeline",
+                "llm": self.settings.llm_provider,
+                "stt": self.settings.stt_provider,
+                "tts": self.settings.tts_provider,
+            },
+        )
+        self._call_metrics[saved.id] = tracker
 
         intro_latency: dict[str, int] = {}
         if self.settings.bot_opening_mode == "llm":
@@ -746,6 +760,14 @@ class ConversationService:
             self._ms(ttfb_ms),
             self._ms(tts_ms),
         )
+        tracker.mark_first_bot_audio()
+        tracker.mark_bot_turn(
+            text=intro_text,
+            tts_ms=tts_ms,
+            llm_ms=intro_latency.get("llm_ms"),
+        )
+        if intro_latency.get("llm_ms") is not None:
+            tracker.mark_llm_request(latency_ms=intro_latency["llm_ms"])
         audio_path = await self.audio.save_audio(
             audio_content, extension=self._tts_extension()
         )
@@ -896,6 +918,24 @@ class ConversationService:
             self._ms(latency.get("tts_ms")),
         )
 
+        tracker = self._call_metrics.get(conversation.id)
+        if tracker is not None:
+            # Estimación gruesa de audio STT: PCM16 mono 16kHz ≈ 32000 bytes/s.
+            stt_secs = None
+            if audio_bytes:
+                try:
+                    stt_secs = max(0.0, len(audio_bytes) / 32000.0)
+                except Exception:
+                    stt_secs = None
+            tracker.mark_pipeline_turn(
+                user_text=user_text,
+                assistant_text=assistant_text,
+                stt_ms=int(latency.get("stt_ms") or 0),
+                llm_ms=int(latency.get("llm_ms") or 0),
+                tts_ms=int(latency.get("tts_ms") or 0),
+                stt_audio_seconds=stt_secs,
+            )
+
         return {
             "conversation_id": conversation.id,
             "user_text": user_text,
@@ -906,5 +946,10 @@ class ConversationService:
             "action": action_result.to_dict() if action_result else None,
         }
 
-    def end_conversation(self, conversation_id: str) -> None:
+    def end_conversation(
+        self, conversation_id: str, *, disconnect_reason: str = "ended"
+    ) -> None:
         self.conversations.update_status(conversation_id, "ended")
+        tracker = self._call_metrics.pop(conversation_id, None)
+        if tracker is not None:
+            tracker.flush(self.db, disconnect_reason=disconnect_reason)

@@ -304,10 +304,12 @@ async def _realtime_session(mic: MicStream, capture: UtteranceCapture, settings,
                     logger.info("Action realtime: %s", action)
                     if action.get("end_session"):
                         logger.info("Acción finalizar → cierro Realtime")
+                        session.set_disconnect_reason("finalizar")
                         break
 
                 if (not playing) and session.idle_timed_out(settings.bot_end_call_ms):
                     logger.info("Fin Realtime por silencio prolongado")
+                    session.set_disconnect_reason("silence_timeout")
                     break
         finally:
             mic.stop()
@@ -326,6 +328,8 @@ async def _realtime_session(mic: MicStream, capture: UtteranceCapture, settings,
         logger.exception("Error en sesión Realtime")
         if session is not None:
             try:
+                session.set_disconnect_reason("error")
+                session.flush_metrics(disconnect_reason="error")
                 await session.close()
             except Exception:
                 pass
@@ -416,7 +420,9 @@ async def _pipeline_session(mic: MicStream, capture: UtteranceCapture, settings,
                 logger.info("Fin de conversación por silencio prolongado")
                 if is_showing_video():
                     return_to_idle()
-                service.end_conversation(conversation.id)
+                service.end_conversation(
+                    conversation.id, disconnect_reason="silence_timeout"
+                )
                 bye = "Chau, acá estoy cuando me necesites."
                 character = service.characters.get_by_id(conversation.character_id)
                 if character:
@@ -461,7 +467,9 @@ async def _pipeline_session(mic: MicStream, capture: UtteranceCapture, settings,
                     logger.info("Acción finalizar → cerrando conversación")
                     if is_showing_video():
                         return_to_idle()
-                    service.end_conversation(conversation.id)
+                    service.end_conversation(
+                        conversation.id, disconnect_reason="finalizar"
+                    )
                     break
     finally:
         mic.stop()
